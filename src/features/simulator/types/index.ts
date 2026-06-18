@@ -1,250 +1,227 @@
 import type { RefObject } from 'react'
 
-export type ChatSender = 'system' | 'scammer' | 'victim'
+export type DayPhase = 'work' | 'night' | 'ended'
+
+export type WorkstationTab = 'chat' | 'browser' | 'dorm' | 'escape' | 'report'
+
+export type TargetStatus = 'active' | 'closed' | 'helped' | 'reported'
+
+export type ChatSender = 'system' | 'player' | 'target'
 
 export type ToastType = 'info' | 'success' | 'warning'
 
-export type Currency = 'dirty' | 'clean'
-
 export type SoundEffect = 'click' | 'cash' | 'alarm' | 'upgrade' | 'fail'
 
-export type GamePhase = 'scam' | 'surveillance' | 'escape'
+export type PlayerStatKey =
+  | 'health'
+  | 'energy'
+  | 'mental'
+  | 'guilt'
+  | 'empathy'
+  | 'risk'
 
-export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
+export interface PlayerStats {
+  health: number
+  energy: number
+  mental: number
+  guilt: number
+  empathy: number
+  risk: number
+  cash: number
+}
 
-export type GameOverType = 'raid' | 'exposed' | 'burnout' | 'win' | null
+export interface DailyKpi {
+  money: number
+  messages: number
+  reportsMax: number
+}
 
-export type UpgradeKey =
-  | 'keyboard'
-  | 'vpn'
-  | 'audioRecorder'
-  | 'screenDimmer'
-  | 'hiddenPhone'
-  | 'privateProxy'
+export interface DailyProgress {
+  money: number
+  messages: number
+  reports: number
+}
+
+export interface ChoiceEffects {
+  money: number
+  messages: number
+  trust: number
+  suspicion: number
+  risk: number
+  guilt: number
+  empathy: number
+  energy: number
+  health: number
+  mental: number
+  minutes: number
+}
 
 export interface DialogueChoice {
   text: string
-  heat: number
-  success: number
-  next: number
-  dirty: number
+  effects: ChoiceEffects
+  nextScene: number | null
+  outcome?: Exclude<TargetStatus, 'active'>
+  clueId?: string
+  sendsSignal?: boolean
 }
 
-export interface DialogueNode {
-  scammer: string
-  victim: string
+export interface DialogueScene {
+  playerLine: string
+  targetLine: string
   choices: DialogueChoice[]
 }
 
-export interface ObservationChoice {
-  text: string
-  resultText: string
-  heat: number
-  suspicion: number
-  stress: number
-  evidence: number
-  dirtyMoney: number
-  cleanMoney: number
-  note?: string
-  unlockClue?: string
-  toast?: ToastDescriptor
-}
-
-export interface VictimScenario {
+export interface TargetDefinition {
   id: string
   name: string
   avatar: string
-  type: string
+  age: number
+  job: string
+  location: string
   difficulty: string
   description: string
-  script: DialogueNode[]
+  weakness: string
   redFlags: string[]
+  researchFinding: string
   clueId: string
-  revealWeight: number
-  observationPrompt: string
-  observationVictimLine: string
-  observationChoices: ObservationChoice[]
+  scenes: DialogueScene[]
+}
+
+export interface TargetProgress {
+  id: string
+  sceneIndex: number
+  researched: boolean
+  status: TargetStatus
+  trust: number
+  suspicion: number
+  moneyCollected: number
+}
+
+export interface EscapeClue {
+  id: string
+  label: string
+  source: 'conversation' | 'research' | 'night' | 'event'
 }
 
 export interface ChatMessage {
+  id: string
+  targetId: string
   sender: ChatSender
   text: string
 }
 
-export interface LogDescriptor {
+export interface LogEntry {
+  id: string
   text: string
-  color: string
+  time: string
+  tone: 'neutral' | 'danger' | 'success' | 'warning'
 }
 
-export interface ToastDescriptor {
+export interface ToastItem {
+  id: string
   text: string
   type: ToastType
 }
 
-export interface LogEntry extends LogDescriptor {
-  id: string
-  time: string
+export interface EventEffects {
+  health: number
+  energy: number
+  mental: number
+  guilt: number
+  empathy: number
+  risk: number
+  cash: number
+  money: number
+  messages: number
+  reports: number
+  minutes: number
 }
 
-export interface ToastItem extends ToastDescriptor {
-  id: string
-}
-
-export interface UpgradeDefinition {
-  name: string
-  cost: number
-  level: number
-  description: string
-  currency: Currency
-  availablePhase: GamePhase
-  maxLevel: number
-  findSpeedBonus?: number
-  heatModifier?: number
-  evidenceBonus?: number
-  suspicionModifier?: number
-  stressModifier?: number
-  unlocksEscape?: boolean
-}
-
-export type UpgradeState = Record<UpgradeKey, UpgradeDefinition>
-
-export interface ActiveVictimSession {
-  victimId: string
-  stepIndex: number
-}
-
-export interface EventTriggerConditions {
-  phases?: GamePhase[]
-  minimumDirtyMoney?: number
-  minimumCleanMoney?: number
-  minimumHeat?: number
-  maximumHeat?: number
-  minimumSuspicion?: number
-  minimumEvidence?: number
-  revealTriggered?: boolean
-}
-
-export type EventOperation =
-  | {
-      type: 'adjustMoney'
-      currency: Currency
-      amount: number
-    }
-  | {
-      type: 'adjustHeat'
-      amount: number
-    }
-  | {
-      type: 'adjustSuspicion'
-      amount: number
-    }
-  | {
-      type: 'adjustStress'
-      amount: number
-    }
-  | {
-      type: 'adjustEvidence'
-      amount: number
-    }
-  | {
-      type: 'addLog'
-      entry: LogDescriptor
-    }
-  | {
-      type: 'addToast'
-      toast: ToastDescriptor
-    }
-  | {
-      type: 'addNote'
-      note: string
-    }
-  | {
-      type: 'unlockClue'
-      clue: string
-    }
-
-export interface RandomEventChoice {
+export interface EventChoice {
   text: string
-  requirements?: {
-    currency?: Currency
-    minimumAmount?: number
-    requiredUpgrade?: UpgradeKey
-  }
-  onSuccess: EventOperation[]
-  onFailure?: EventOperation[]
+  result: string
+  effects: EventEffects
+  clue?: EscapeClue
+  sendsSignal?: boolean
 }
 
-export interface RandomEventDefinition {
+export interface GameEvent {
   id: string
   title: string
   description: string
-  conditions?: EventTriggerConditions
-  choices: RandomEventChoice[]
+  minimumDay: number
+  phase: DayPhase
+  choices: EventChoice[]
+}
+
+export type GameEndingType =
+  | 'escaped'
+  | 'caught'
+  | 'collapsed'
+  | 'manager'
+  | 'trapped'
+
+export interface GameEnding {
+  type: GameEndingType
+  title: string
+  description: string
 }
 
 export interface GameState {
-  dirtyMoney: number
-  cleanMoney: number
-  withdrawnMoney: number
-  heat: number
-  stress: number
-  suspicion: number
-  evidence: number
-  phase: GamePhase
-  revealTriggered: boolean
-  showRevealModal: boolean
-  hasStarted: boolean
-  showDisclaimer: boolean
-  isMuted: boolean
-  playerTitle: string
-  logs: LogEntry[]
-  toasts: ToastItem[]
-  isFinding: boolean
-  findProgress: number
-  activeVictimSession: ActiveVictimSession | null
-  activeObservationTargetId: string | null
-  isVictimTyping: boolean
+  saveVersion: 2
+  day: number
+  timeMinutes: number
+  phase: DayPhase
+  activeTab: WorkstationTab
+  activeTargetId: string
+  stats: PlayerStats
+  kpi: DailyKpi
+  progress: DailyProgress
+  targets: TargetProgress[]
   chatMessages: ChatMessage[]
+  clues: EscapeClue[]
+  logs: LogEntry[]
+  incidents: LogEntry[]
+  toasts: ToastItem[]
+  nightActionsUsed: number
+  researchedToday: string[]
+  triggeredEventIds: string[]
+  sentSignal: boolean
+  showDisclaimer: boolean
+  isBooting: boolean
+  isMuted: boolean
+  isTargetTyping: boolean
   activeEventId: string | null
-  gameOverType: GameOverType
-  upgrades: UpgradeState
-  notes: string[]
-  unlockedClues: string[]
-  completedCaseCount: number
-}
-
-export interface GameTransition {
-  changes?: Partial<GameState>
-  appendLogs?: LogDescriptor[]
-  appendToasts?: ToastDescriptor[]
-  appendChatMessages?: ChatMessage[]
-  replaceLogs?: LogDescriptor[]
-  replaceChatMessages?: ChatMessage[]
-  sound?: SoundEffect
+  ending: GameEnding | null
+  lastSavedAt: string | null
 }
 
 export interface SimulatorDerivedState {
-  activeClues: string[]
-  activeEvent: RandomEventDefinition | null
-  canEscape: boolean
-  currentDialogue: DialogueNode | null
-  currentVictim: VictimScenario | null
-  riskLevel: RiskLevel
+  activeEvent: GameEvent | null
+  activeTarget: TargetDefinition
+  activeTargetProgress: TargetProgress
+  currentScene: DialogueScene | null
+  escapeChance: number
+  kpiPassed: boolean
+  warningLevel: 'LOW' | 'MEDIUM' | 'HIGH'
 }
 
 export interface SimulatorActions {
   acceptDisclaimer: () => void
-  acceptReveal: () => void
-  buyUpgrade: (key: UpgradeKey) => void
-  escapeBorder: () => void
-  launderDirtyMoney: () => void
-  resolveActiveEventChoice: (choiceIndex: number) => void
+  chooseDialogue: (choiceIndex: number) => void
+  chooseEvent: (choiceIndex: number) => void
+  endWorkDay: () => void
+  finishNight: () => void
+  performNightAction: (action: NightAction) => void
+  researchTarget: () => void
   restartGame: () => void
-  selectDialogueOption: (choiceIndex: number) => void
-  selectObservationChoice: (choiceIndex: number) => void
-  startFindingVictim: () => void
+  selectTab: (tab: WorkstationTab) => void
+  selectTarget: (targetId: string) => void
   toggleMuted: () => void
+  tryEscape: () => void
 }
+
+export type NightAction = 'sleep' | 'eat' | 'window' | 'coworker'
 
 export interface UseSimulatorGameResult {
   actions: SimulatorActions

@@ -1,114 +1,182 @@
+import { Volume2, VolumeX } from 'lucide-react'
+import ControlPanel from '@/features/simulator/components/ControlPanel'
 import {
-  ChatPanel,
-  DisclaimerModal,
-  EscapePanel,
-  EventModal,
-  GameOverModal,
-  RevealModal,
-  SimulatorHeader,
-  SystemLogPanel,
-  ToastStack,
-  UpgradesPanel,
-  WalletPanel,
-  useSimulatorGame,
-} from '@/features/simulator'
+  RetroButton,
+  RetroModal,
+} from '@/features/simulator/components/RetroPrimitives'
+import SurveillancePanel from '@/features/simulator/components/SurveillancePanel'
+import Workstation from '@/features/simulator/components/Workstation'
+import { formatTime } from '@/features/simulator/logic/game-rules'
+import { useSimulatorGame } from '@/features/simulator/hooks/useSimulatorGame'
+import { APP_VERSION } from '@/shared/config/version'
 
 export default function SimulatorPage() {
   const { state, derived, actions, chatEndRef } = useSimulatorGame()
+  const time = formatTime(state.timeMinutes)
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-x-hidden bg-[#07080b] text-slate-100 selection:bg-emerald-500 selection:text-slate-900">
-      <div className="pointer-events-none absolute top-0 left-1/4 h-96 w-96 rounded-full bg-emerald-500/5 blur-3xl" />
-      <div className="pointer-events-none absolute right-1/4 bottom-10 h-[500px] w-[500px] rounded-full bg-rose-500/5 blur-3xl" />
+    <div className="simulator-shell">
+      {state.showDisclaimer && (
+        <RetroModal
+          title="CẢNH BÁO GIÁO DỤC"
+          actions={
+            <RetroButton tone="good" onClick={actions.acceptDisclaimer}>
+              Tôi đã hiểu, bắt đầu ca trực
+            </RetroButton>
+          }
+        >
+          <p>
+            Trò chơi này là một mô phỏng phản tư về các compound lừa đảo và những
+            con người bị nghiền giữa áp lực doanh số, bạo lực và sự tuyệt vọng của
+            nạn nhân.
+          </p>
+          <div className="warning-box">
+            Không bắt chước bất kỳ hành vi lừa đảo tài chính nào. Nếu gặp tình
+            huống tương tự ngoài đời, hãy dừng giao dịch, xác minh và báo cho người
+            thân hoặc cơ quan chức năng.
+          </div>
+        </RetroModal>
+      )}
 
-      <ToastStack toasts={state.toasts} />
+      {state.isBooting && (
+        <div className="boot-screen">
+          <div>
+            <p>SCAM CENTER INTERNAL SYSTEM v2.14</p>
+            <p>Build {APP_VERSION}</p>
+            <p>Connecting to PNH-04...</p>
+            <p>Employee A-102 authenticated.</p>
+          </div>
+        </div>
+      )}
 
-      <DisclaimerModal isOpen={state.showDisclaimer} onConfirm={actions.acceptDisclaimer} />
+      {derived.activeEvent && (
+        <RetroModal title={derived.activeEvent.title}>
+          <p>{derived.activeEvent.description}</p>
+          <div className="event-choices">
+            {derived.activeEvent.choices.map((choice, index) => (
+              <RetroButton
+                key={choice.text}
+                className="choice-button"
+                onClick={() => actions.chooseEvent(index)}
+              >
+                {choice.text}
+              </RetroButton>
+            ))}
+          </div>
+        </RetroModal>
+      )}
 
-      <RevealModal isOpen={state.showRevealModal} onConfirm={actions.acceptReveal} />
+      {state.ending && (
+        <RetroModal
+          title={state.ending.title}
+          actions={
+            <RetroButton onClick={actions.restartGame}>Chơi lại từ đầu</RetroButton>
+          }
+        >
+          <div className="ending-content">
+            <h2>{state.ending.title}</h2>
+            <p>{state.ending.description}</p>
+            <p>
+              Final stats: Guilt {state.stats.guilt} | Empathy {state.stats.empathy}{' '}
+              | Risk {state.stats.risk}
+            </p>
+          </div>
+        </RetroModal>
+      )}
 
-      <EventModal activeEvent={derived.activeEvent} onSelectChoice={actions.resolveActiveEventChoice} />
+      <div className="toast-stack">
+        {state.toasts.map((toast) => (
+          <div key={toast.id} className={`retro-toast retro-toast-${toast.type}`}>
+            {toast.text}
+          </div>
+        ))}
+      </div>
 
-      <GameOverModal
-        gameOverType={state.gameOverType}
-        playerTitle={state.playerTitle}
-        withdrawnMoney={state.withdrawnMoney}
-        onRestart={actions.restartGame}
-      />
+      <header className="top-statusbar">
+        <div className="brand-block">
+          <span>Cambodia Scam Simulator</span>
+          <span className="brand-version">{APP_VERSION}</span>
+        </div>
+        <div className="top-metric">
+          <span className="status-lamp" /> SERVER ONLINE
+        </div>
+        <div className="top-metric">
+          DAY: <strong>{state.day}</strong>
+        </div>
+        <div className="top-metric">
+          TIME: <strong>{time}</strong>
+        </div>
+        <div className="top-metric">
+          KPI:{' '}
+          <strong>
+            ${state.progress.money.toLocaleString()}/${state.kpi.money.toLocaleString()}
+          </strong>
+        </div>
+        <div className="top-metric">
+          WARNING:{' '}
+          <strong className={`warning-${derived.warningLevel.toLowerCase()}`}>
+            {derived.warningLevel}
+          </strong>
+        </div>
+        <div className="employee-id">
+          EMPLOYEE ID: <strong>A-102</strong>
+        </div>
+        <button
+          type="button"
+          aria-label="Toggle audio"
+          className="audio-button"
+          onClick={actions.toggleMuted}
+        >
+          {state.isMuted ? <VolumeX /> : <Volume2 />}
+        </button>
+      </header>
 
-      <SimulatorHeader
-        heat={state.heat}
-        isMuted={state.isMuted}
-        phase={state.phase}
-        playerTitle={state.playerTitle}
-        riskLevel={derived.riskLevel}
-        stress={state.stress}
-        suspicion={state.suspicion}
-        onToggleMuted={actions.toggleMuted}
-      />
-
-      <main className="mx-auto grid max-w-7xl flex-grow grid-cols-1 items-start gap-6 p-4 lg:grid-cols-12">
-        <ChatPanel
+      <main className="desktop-grid">
+        <ControlPanel
+          day={state.day}
+          kpi={state.kpi}
+          progress={state.progress}
+          stats={state.stats}
+        />
+        <Workstation
+          activeTab={state.activeTab}
+          activeTarget={derived.activeTarget}
+          activeTargetProgress={derived.activeTargetProgress}
           chatEndRef={chatEndRef}
           chatMessages={state.chatMessages}
-          currentDialogue={derived.currentDialogue}
-          currentVictim={derived.currentVictim}
-          findProgress={state.findProgress}
-          isFinding={state.isFinding}
-          isVictimTyping={state.isVictimTyping}
+          clues={state.clues}
+          currentScene={derived.currentScene}
+          escapeChance={derived.escapeChance}
+          isTargetTyping={state.isTargetTyping}
+          kpiPassed={derived.kpiPassed}
+          nightActionsUsed={state.nightActionsUsed}
           phase={state.phase}
-          onSelectDialogueChoice={actions.selectDialogueOption}
-          onSelectObservationChoice={actions.selectObservationChoice}
-          onStartFindingVictim={actions.startFindingVictim}
+          progress={state.progress}
+          researchedToday={state.researchedToday}
+          sentSignal={state.sentSignal}
+          targets={state.targets}
+          onChooseDialogue={actions.chooseDialogue}
+          onEndWorkDay={actions.endWorkDay}
+          onFinishNight={actions.finishNight}
+          onNightAction={actions.performNightAction}
+          onResearch={actions.researchTarget}
+          onSelectTab={actions.selectTab}
+          onSelectTarget={actions.selectTarget}
+          onTryEscape={actions.tryEscape}
         />
-
-        <section className="flex flex-col gap-6 lg:col-span-4">
-          <WalletPanel
-            cleanMoney={state.cleanMoney}
-            dirtyMoney={state.dirtyMoney}
-            evidence={state.evidence}
-            phase={state.phase}
-            withdrawnMoney={state.withdrawnMoney}
-            onLaunder={actions.launderDirtyMoney}
-          />
-          <UpgradesPanel
-            cleanMoney={state.cleanMoney}
-            dirtyMoney={state.dirtyMoney}
-            phase={state.phase}
-            upgrades={state.upgrades}
-            onBuyUpgrade={actions.buyUpgrade}
-          />
-        </section>
-
-        <section className="flex h-[620px] flex-col gap-6 lg:col-span-3">
-          <EscapePanel
-            canEscape={derived.canEscape}
-            cleanMoney={state.cleanMoney}
-            clueCount={derived.activeClues.length}
-            evidence={state.evidence}
-            hasHiddenPhone={state.upgrades.hiddenPhone.level > 0}
-            hasPrivateProxy={state.upgrades.privateProxy.level > 0}
-            phase={state.phase}
-            onEscape={actions.escapeBorder}
-          />
-          <SystemLogPanel
-            clues={derived.activeClues}
-            logs={state.logs}
-            notes={state.notes}
-            phase={state.phase}
-          />
-        </section>
+        <SurveillancePanel
+          incidents={state.incidents}
+          logs={state.logs}
+          time={time}
+        />
       </main>
 
-      <footer className="mt-auto border-t border-slate-950 bg-slate-950/40 py-5 text-center text-[10px] text-slate-700">
-        <p>
-          Phiên bản hybrid pivot: bắt đầu như scam simulator, kết thúc như một bài thoát thân khỏi
-          hệ thống đang nuốt chính người vận hành nó.
-        </p>
-        <p className="mt-1 font-medium italic text-slate-600">
-          Cảnh giác với mọi lời hứa lợi nhuận nhanh, mọi line chat ép nạp và mọi cuộc gọi giả danh
-          cơ quan chức năng.
-        </p>
+      <footer className="bottom-statusbar">
+        <span>Connected: PNH-04 | User: A-102 | Mode: OBSERVE ONLY</span>
+        <span>
+          {state.lastSavedAt ? `Autosaved ${state.lastSavedAt}` : 'Autosave: localStorage'} |{' '}
+          {APP_VERSION}
+        </span>
       </footer>
     </div>
   )

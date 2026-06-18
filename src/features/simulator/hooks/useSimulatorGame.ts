@@ -1,412 +1,547 @@
-import { useEffect, useEffectEvent, useReducer, useRef } from 'react'
+import { useEffect, useReducer, useRef } from 'react'
 import {
-  ESCAPE_COST,
-  FIND_PROGRESS_INTERVAL_MS,
-  PASSIVE_TICK_MS,
-  RANDOM_EVENT_CHANCE,
-  REVEAL_CASE_THRESHOLD,
-  REVEAL_CLEAN_MONEY_THRESHOLD,
-  TOAST_DURATION_MS,
-  VICTIM_TYPING_DELAY_MS,
+  BOOT_DELAY_MS,
+  EVENT_CHANCE,
+  MAX_DAY,
+  MAX_NIGHT_ACTIONS,
+  SAVE_KEY,
+  TYPING_DELAY_MS,
+  WORK_END_MINUTES,
 } from '@/features/simulator/data/constants'
-import { RANDOM_EVENTS } from '@/features/simulator/data/events'
-import { VICTIMS_DATABASE } from '@/features/simulator/data/victims'
+import { GAME_EVENTS } from '@/features/simulator/data/events'
+import { TARGETS } from '@/features/simulator/data/victims'
 import {
-  calculateRiskLevel,
-  canUnlockEscapeRoute,
-  createBuyUpgradeTransition,
-  createDialogueChoiceTransition,
-  createDisclaimerTransition,
-  createEscapePhaseTransition,
-  createEscapeTransition,
-  createEventChoiceTransition,
-  createLaunderTransition,
-  createObservationChoiceTransition,
-  createRestartState,
-  createRevealAcceptanceTransition,
-  createRevealTransition,
-  createTickTransition,
-  createTitlePromotionTransition,
+  addClue,
+  applyChoiceEffects,
+  applyEventEffects,
+  calculateEscapeChance,
+  createDayThreeEnding,
+  createId,
+  createInitialGameState,
+  createLog,
+  createNextDayState,
+  getNightClue,
+  isKpiPassed,
+  isValidSavedState,
+  resolveCollapsedEnding,
 } from '@/features/simulator/logic/game-rules'
-import { simulatorInitialState, simulatorReducer } from '@/features/simulator/logic/reducer'
+import { simulatorReducer } from '@/features/simulator/logic/reducer'
 import { AudioSynth } from '@/features/simulator/services/audio-synth'
 import type {
-  DialogueNode,
-  GameTransition,
-  RandomEventDefinition,
-  SoundEffect,
-  UpgradeKey,
+  EscapeClue,
+  GameEvent,
+  GameState,
+  NightAction,
+  TargetProgress,
   UseSimulatorGameResult,
-  VictimScenario,
+  WorkstationTab,
 } from '@/features/simulator/types'
 
 const audioSynth = new AudioSynth()
 
 interface SimulatorHookOptions {
   random?: () => number
+  storage?: Storage
 }
 
-const isEventEligible = (state: typeof simulatorInitialState, event: RandomEventDefinition) => {
-  const conditions = event.conditions
-
-  if (!conditions) {
-    return true
+const getInitialState = (storage?: Storage) => {
+  if (!storage) {
+    return createInitialGameState()
   }
 
-  if (conditions.phases && !conditions.phases.includes(state.phase)) {
-    return false
+  try {
+    const rawValue = storage.getItem(SAVE_KEY)
+    if (!rawValue) {
+      return createInitialGameState()
+    }
+
+    const parsedValue: unknown = JSON.parse(rawValue)
+    if (!isValidSavedState(parsedValue)) {
+      storage.removeItem(SAVE_KEY)
+      return createInitialGameState()
+    }
+
+    return {
+      ...parsedValue,
+      isBooting: false,
+      isTargetTyping: false,
+      activeEventId: null,
+      toasts: [],
+    }
+  } catch {
+    storage.removeItem(SAVE_KEY)
+    return createInitialGameState()
+  }
+}
+
+const updateTarget = (
+  targets: TargetProgress[],
+  targetId: string,
+  updater: (target: TargetProgress) => TargetProgress,
+) => targets.map((target) => (target.id === targetId ? updater(target) : target))
+
+const createTargetClue = (targetId: string): EscapeClue | undefined => {
+  const target = TARGETS.find((item) => item.id === targetId)
+  if (!target) {
+    return undefined
   }
 
-  if (conditions.minimumDirtyMoney !== undefined && state.dirtyMoney < conditions.minimumDirtyMoney) {
-    return false
+  return {
+    id: target.clueId,
+    label: target.researchFinding,
+    source: 'conversation',
   }
-
-  if (conditions.minimumCleanMoney !== undefined && state.cleanMoney < conditions.minimumCleanMoney) {
-    return false
-  }
-
-  if (conditions.minimumHeat !== undefined && state.heat < conditions.minimumHeat) {
-    return false
-  }
-
-  if (conditions.maximumHeat !== undefined && state.heat > conditions.maximumHeat) {
-    return false
-  }
-
-  if (conditions.minimumSuspicion !== undefined && state.suspicion < conditions.minimumSuspicion) {
-    return false
-  }
-
-  if (conditions.minimumEvidence !== undefined && state.evidence < conditions.minimumEvidence) {
-    return false
-  }
-
-  if (conditions.revealTriggered !== undefined && state.revealTriggered !== conditions.revealTriggered) {
-    return false
-  }
-
-  return true
 }
 
 export const useSimulatorGame = (
   options: SimulatorHookOptions = {},
 ): UseSimulatorGameResult => {
   const random = options.random ?? Math.random
-  const [state, dispatch] = useReducer(simulatorReducer, simulatorInitialState)
+  const storage =
+    options.storage ?? (typeof window === 'undefined' ? undefined : window.localStorage)
+  const [state, dispatch] = useReducer(simulatorReducer, storage, getInitialState)
   const stateRef = useRef(state)
   const chatEndRef = useRef<HTMLDivElement>(null)
-  const findIntervalRef = useRef<number | null>(null)
-  const victimTypingTimeoutRef = useRef<number | null>(null)
-  const trackedToastIdsRef = useRef<Set<string>>(new Set())
+  const typingTimeoutRef = useRef<number | null>(null)
+  const bootTimeoutRef = useRef<number | null>(null)
 
-  const playSound = (sound?: SoundEffect) => {
-    if (sound) {
-      audioSynth.play(sound)
-    }
-  }
-
-  const applyTransition = (transition: GameTransition | null) => {
-    if (!transition) {
-      return
-    }
-
+  const replaceState = (nextState: GameState) => {
+    const stampedState =
+      nextState.showDisclaimer || nextState.isBooting
+        ? nextState
+        : {
+            ...nextState,
+            lastSavedAt: new Date().toLocaleTimeString(),
+          }
+    stateRef.current = stampedState
     dispatch({
-      type: 'applyTransition',
-      transition,
+      type: 'replace',
+      state: stampedState,
     })
-    playSound(transition.sound)
   }
 
-  const applyTransitionEffect = useEffectEvent((transition: GameTransition | null) => {
-    applyTransition(transition)
+  const addToast = (
+    currentState: GameState,
+    text: string,
+    type: 'info' | 'success' | 'warning',
+  ): GameState => ({
+    ...currentState,
+    toasts: [
+      ...currentState.toasts.slice(-2),
+      {
+        id: createId('toast'),
+        text,
+        type,
+      },
+    ],
   })
 
-  const getCurrentVictim = (victimId: string | null): VictimScenario | null => {
-    if (!victimId) {
-      return null
+  const maybeTriggerEvent = (currentState: GameState): GameState => {
+    if (
+      currentState.activeEventId ||
+      currentState.ending ||
+      currentState.isTargetTyping ||
+      random() >= EVENT_CHANCE
+    ) {
+      return currentState
     }
 
-    return VICTIMS_DATABASE.find((victim) => victim.id === victimId) ?? null
+    const eligibleEvents = GAME_EVENTS.filter(
+      (event) =>
+        event.phase === currentState.phase &&
+        event.minimumDay <= currentState.day &&
+        !currentState.triggeredEventIds.includes(event.id),
+    )
+    const event = eligibleEvents[Math.floor(random() * eligibleEvents.length)]
+
+    if (!event) {
+      return currentState
+    }
+
+    audioSynth.play('alarm')
+    return {
+      ...currentState,
+      activeEventId: event.id,
+      triggeredEventIds: [...currentState.triggeredEventIds, event.id],
+    }
   }
 
-  const triggerVictimDialogue = (victim: VictimScenario, stepIndex: number) => {
-    const dialogueNode: DialogueNode | undefined = victim.script[stepIndex]
-
-    if (!dialogueNode) {
-      applyTransition({
-        changes: {
-          activeVictimSession: null,
-          isVictimTyping: false,
-        },
-        appendChatMessages: [
-          {
-            sender: 'system',
-            text: 'Cuộc trò chuyện vừa bị cắt ngang giữa chừng.',
-          },
-        ],
-      })
-      return
-    }
-
-    applyTransition({
-      appendChatMessages: [
-        {
-          sender: 'scammer',
-          text: dialogueNode.scammer,
-        },
-      ],
-    })
-
-    applyTransition({
-      changes: {
-        isVictimTyping: true,
-      },
-    })
-
-    victimTypingTimeoutRef.current = window.setTimeout(() => {
-      dispatch({
-        type: 'applyTransition',
-        transition: {
-          changes: {
-            isVictimTyping: false,
-          },
-          appendChatMessages: [
-            {
-              sender: 'victim',
-              text: dialogueNode.victim,
-            },
-          ],
-        },
-      })
-      victimTypingTimeoutRef.current = null
-    }, VICTIM_TYPING_DELAY_MS)
+  const finalizeAction = (nextState: GameState, allowEvent = true) => {
+    const ending = resolveCollapsedEnding(nextState)
+    const finalizedState = ending
+      ? {
+          ...nextState,
+          phase: 'ended' as const,
+          ending,
+        }
+      : allowEvent
+        ? maybeTriggerEvent(nextState)
+        : nextState
+    replaceState(finalizedState)
   }
 
   const acceptDisclaimer = () => {
-    const transition = createDisclaimerTransition()
     audioSynth.init()
-    applyTransition(transition)
+    audioSynth.play('upgrade')
+    const nextState = {
+      ...stateRef.current,
+      showDisclaimer: false,
+      isBooting: true,
+    }
+    replaceState(nextState)
+
+    bootTimeoutRef.current = window.setTimeout(() => {
+      const bootedState = {
+        ...stateRef.current,
+        isBooting: false,
+      }
+      replaceState(bootedState)
+      bootTimeoutRef.current = null
+    }, BOOT_DELAY_MS)
   }
 
-  const acceptReveal = () => {
-    applyTransition(createRevealAcceptanceTransition())
-  }
-
-  const toggleMuted = () => {
-    const nextMutedValue = !stateRef.current.isMuted
-    audioSynth.setMuted(nextMutedValue)
-    dispatch({
-      type: 'setMuted',
-      isMuted: nextMutedValue,
+  const selectTab = (tab: WorkstationTab) => {
+    audioSynth.play('click')
+    replaceState({
+      ...stateRef.current,
+      activeTab: tab,
     })
   }
 
-  const startFindingVictim = () => {
+  const selectTarget = (targetId: string) => {
+    const target = TARGETS.find((item) => item.id === targetId)
+    if (!target || stateRef.current.isTargetTyping) {
+      return
+    }
+
+    audioSynth.play('click')
+    replaceState({
+      ...stateRef.current,
+      activeTargetId: targetId,
+      activeTab: 'chat',
+    })
+  }
+
+  const chooseDialogue = (choiceIndex: number) => {
     const currentState = stateRef.current
+    const target = TARGETS.find((item) => item.id === currentState.activeTargetId)
+    const targetProgress = currentState.targets.find(
+      (item) => item.id === currentState.activeTargetId,
+    )
 
     if (
-      currentState.activeVictimSession ||
-      currentState.activeObservationTargetId ||
-      currentState.isFinding ||
-      currentState.showRevealModal
+      !target ||
+      !targetProgress ||
+      targetProgress.status !== 'active' ||
+      currentState.phase !== 'work' ||
+      currentState.isTargetTyping
+    ) {
+      return
+    }
+
+    const scene = target.scenes[targetProgress.sceneIndex]
+    const choice = scene?.choices[choiceIndex]
+    if (!scene || !choice) {
+      return
+    }
+
+    audioSynth.play(choice.effects.money > 0 ? 'cash' : 'click')
+    const playerMessageId = createId('message-player')
+    let nextState = applyChoiceEffects(currentState, choice.effects)
+    const shouldReport = targetProgress.suspicion + choice.effects.suspicion >= 70
+    const nextStatus = shouldReport ? 'reported' : choice.outcome ?? 'active'
+    const reportsToAdd = nextStatus === 'reported' ? 1 : 0
+
+    nextState = {
+      ...nextState,
+      isTargetTyping: true,
+      sentSignal: nextState.sentSignal || Boolean(choice.sendsSignal),
+      progress: {
+        ...nextState.progress,
+        reports: nextState.progress.reports + reportsToAdd,
+      },
+      clues: choice.clueId
+        ? addClue(nextState.clues, createTargetClue(target.id))
+        : nextState.clues,
+      targets: updateTarget(nextState.targets, target.id, (item) => ({
+        ...item,
+        sceneIndex: choice.nextScene ?? item.sceneIndex,
+        status: shouldReport || choice.nextScene === null ? nextStatus : 'active',
+        trust: Math.max(0, Math.min(100, item.trust + choice.effects.trust)),
+        suspicion: Math.max(0, Math.min(100, item.suspicion + choice.effects.suspicion)),
+        moneyCollected: item.moneyCollected + choice.effects.money,
+      })),
+      chatMessages: [
+        ...nextState.chatMessages,
+        {
+          id: playerMessageId,
+          targetId: target.id,
+          sender: 'player',
+          text: choice.text,
+        },
+      ],
+      logs: [
+        ...nextState.logs.slice(-30),
+        createLog(
+          `${target.name}: ${choice.effects.money > 0 ? `đã chuyển $${choice.effects.money.toLocaleString()}` : 'line vừa đổi hướng'}.`,
+          nextState.timeMinutes,
+          choice.effects.money > 0 ? 'success' : 'warning',
+        ),
+      ],
+    }
+
+    replaceState(nextState)
+
+    typingTimeoutRef.current = window.setTimeout(() => {
+      const latestState = stateRef.current
+      const latestProgress = latestState.targets.find((item) => item.id === target.id)
+      const response =
+        choice.nextScene === null
+          ? choice.outcome === 'helped'
+            ? 'Tôi hiểu rồi. Tôi sẽ dừng lại và giữ toàn bộ bằng chứng.'
+            : latestProgress?.status === 'reported'
+              ? 'Tôi đã báo người nhà và sẽ trình báo chuyện này.'
+              : 'Đừng liên lạc với tôi nữa.'
+          : target.scenes[choice.nextScene]?.targetLine ?? 'Kết nối đã bị ngắt.'
+      const stateWithResponse: GameState = {
+        ...latestState,
+        isTargetTyping: false,
+        chatMessages: [
+          ...latestState.chatMessages,
+          {
+            id: createId('message-target'),
+            targetId: target.id,
+            sender: 'target',
+            text: response,
+          },
+        ],
+      }
+      finalizeAction(stateWithResponse)
+      typingTimeoutRef.current = null
+    }, TYPING_DELAY_MS)
+  }
+
+  const researchTarget = () => {
+    const currentState = stateRef.current
+    const target = TARGETS.find((item) => item.id === currentState.activeTargetId)
+    const targetProgress = currentState.targets.find((item) => item.id === currentState.activeTargetId)
+
+    if (
+      !target ||
+      !targetProgress ||
+      currentState.phase !== 'work' ||
+      currentState.researchedToday.includes(target.id)
     ) {
       return
     }
 
     audioSynth.play('click')
-    dispatch({
-      type: 'setFinding',
-      isFinding: true,
-      findProgress: 0,
-    })
-
-    const keyboardBoost =
-      currentState.upgrades.keyboard.level * (currentState.upgrades.keyboard.findSpeedBonus ?? 2.8)
-    const speed = currentState.phase === 'scam' ? 4 + keyboardBoost : 8 + keyboardBoost
-
-    findIntervalRef.current = window.setInterval(() => {
-      const latestState = stateRef.current
-      const nextProgress = latestState.findProgress + speed
-
-      if (nextProgress < 100) {
-        dispatch({
-          type: 'setFinding',
-          isFinding: true,
-          findProgress: nextProgress,
-        })
-        return
-      }
-
-      if (findIntervalRef.current !== null) {
-        window.clearInterval(findIntervalRef.current)
-        findIntervalRef.current = null
-      }
-
-      const candidateVictims =
-        latestState.phase === 'scam'
-          ? VICTIMS_DATABASE.slice(0, 2)
-          : VICTIMS_DATABASE.filter((victim) => !latestState.unlockedClues.includes(victim.clueId))
-
-      const selectionPool = candidateVictims.length > 0 ? candidateVictims : VICTIMS_DATABASE
-      const selectedVictim =
-        selectionPool[Math.floor(random() * selectionPool.length)] ?? selectionPool[0]
-
-      if (latestState.phase === 'scam') {
-        dispatch({
-          type: 'applyTransition',
-          transition: {
-            changes: {
-              activeObservationTargetId: null,
-              activeVictimSession: {
-                victimId: selectedVictim.id,
-                stepIndex: 0,
-              },
-              findProgress: 0,
-              isFinding: false,
-              isVictimTyping: false,
-            },
-            replaceChatMessages: [
-              {
-                sender: 'system',
-                text: `Line mới đã mở: ${selectedVictim.name} - ${selectedVictim.type}.`,
-              },
-            ],
-          },
-        })
-
-        triggerVictimDialogue(selectedVictim, 0)
-        return
-      }
-
-      dispatch({
-        type: 'applyTransition',
-        transition: {
-          changes: {
-            activeObservationTargetId: selectedVictim.id,
-            activeVictimSession: null,
-            findProgress: 0,
-            isFinding: false,
-            isVictimTyping: false,
-          },
-          replaceChatMessages: [
-            {
-              sender: 'system',
-              text: `Bạn mở một “cage” mới: ${selectedVictim.name}.`,
-            },
-            {
-              sender: 'system',
-              text: selectedVictim.observationPrompt,
-            },
-            {
-              sender: 'victim',
-              text: selectedVictim.observationVictimLine,
-            },
-          ],
-        },
-      })
-    }, FIND_PROGRESS_INTERVAL_MS)
+    const nextState: GameState = {
+      ...currentState,
+      timeMinutes: Math.min(WORK_END_MINUTES, currentState.timeMinutes + 35),
+      stats: {
+        ...currentState.stats,
+        energy: Math.max(0, currentState.stats.energy - 5),
+        risk: Math.min(100, currentState.stats.risk + 4),
+      },
+      researchedToday: [...currentState.researchedToday, target.id],
+      targets: updateTarget(currentState.targets, target.id, (item) => ({
+        ...item,
+        researched: true,
+        trust: Math.min(100, item.trust + 4),
+      })),
+      logs: [
+        ...currentState.logs.slice(-30),
+        createLog(`Browser cache: ${target.researchFinding}`, currentState.timeMinutes + 35, 'neutral'),
+      ],
+    }
+    finalizeAction(addToast(nextState, 'Đã lưu hồ sơ target vào workstation.', 'success'))
   }
 
-  const selectDialogueOption = (choiceIndex: number) => {
+  const performNightAction = (action: NightAction) => {
     const currentState = stateRef.current
-    const activeVictimSession = currentState.activeVictimSession
-
-    if (!activeVictimSession || currentState.isVictimTyping) {
-      return
-    }
-
-    const currentVictim = getCurrentVictim(activeVictimSession.victimId)
-
-    if (!currentVictim) {
+    if (currentState.phase !== 'night' || currentState.nightActionsUsed >= MAX_NIGHT_ACTIONS) {
       return
     }
 
     audioSynth.play('click')
-    const transition = createDialogueChoiceTransition({
-      choiceIndex,
-      roll: random() * 100,
-      state: currentState,
-      victim: currentVictim,
-    })
+    let stats = currentState.stats
+    let clues = currentState.clues
+    let text = ''
 
-    applyTransition(transition)
-
-    const nextVictimSession = transition.changes?.activeVictimSession
-
-    if (nextVictimSession && nextVictimSession.victimId === currentVictim.id) {
-      triggerVictimDialogue(currentVictim, nextVictimSession.stepIndex)
+    if (action === 'sleep') {
+      stats = {
+        ...stats,
+        energy: Math.min(100, stats.energy + 25),
+        mental: Math.min(100, stats.mental + 10),
+      }
+      text = 'Bạn ngủ được một giấc ngắn giữa tiếng quạt và tiếng khóa cửa.'
     }
+
+    if (action === 'eat') {
+      stats = {
+        ...stats,
+        health: Math.min(100, stats.health + 14),
+        cash: Math.max(0, stats.cash - 5),
+      }
+      text = 'Một phần cơm nguội giúp cơ thể cầm cự thêm một ngày.'
+    }
+
+    if (action === 'window') {
+      stats = {
+        ...stats,
+        energy: Math.max(0, stats.energy - 5),
+        risk: Math.min(100, stats.risk + 7),
+      }
+      clues = addClue(clues, getNightClue('window'))
+      text = 'Bạn phát hiện camera hành lang mất góc nhìn ngay sát cầu thang.'
+    }
+
+    if (action === 'coworker') {
+      stats = {
+        ...stats,
+        mental: Math.max(0, stats.mental - 4),
+        risk: Math.min(100, stats.risk + 10),
+      }
+      clues = addClue(clues, getNightClue('coworker'))
+      text = 'Một đồng nghiệp đưa lịch đổi ca rồi yêu cầu bạn đừng nhắc tên họ.'
+    }
+
+    const nextState: GameState = {
+      ...currentState,
+      stats,
+      clues,
+      nightActionsUsed: currentState.nightActionsUsed + 1,
+      incidents: [
+        ...currentState.incidents.slice(-20),
+        createLog(text, currentState.timeMinutes, action === 'sleep' || action === 'eat' ? 'success' : 'warning'),
+      ],
+    }
+    finalizeAction(addToast(nextState, text, 'info'))
   }
 
-  const selectObservationChoice = (choiceIndex: number) => {
+  const endWorkDay = () => {
     const currentState = stateRef.current
-    const currentVictim = getCurrentVictim(currentState.activeObservationTargetId)
-
-    if (!currentVictim) {
+    if (currentState.phase !== 'work') {
       return
     }
 
-    const selectedChoice = currentVictim.observationChoices[choiceIndex]
-
-    if (!selectedChoice) {
-      return
+    audioSynth.play(isKpiPassed(currentState) ? 'upgrade' : 'fail')
+    const passed = isKpiPassed(currentState)
+    const nextState: GameState = {
+      ...currentState,
+      phase: 'night',
+      activeTab: 'dorm',
+      timeMinutes: WORK_END_MINUTES,
+      stats: {
+        ...currentState.stats,
+        health: Math.max(0, currentState.stats.health + (passed ? 0 : -10)),
+        mental: Math.max(0, currentState.stats.mental + (passed ? -3 : -12)),
+        risk: Math.min(100, currentState.stats.risk + (passed ? 0 : 10)),
+        cash: currentState.stats.cash + (passed ? 25 : 0),
+      },
+      incidents: [
+        ...currentState.incidents.slice(-20),
+        createLog(
+          passed
+            ? 'Tony: Đạt KPI. Ngày mai chỉ tiêu sẽ cao hơn.'
+            : 'Tony: Trượt KPI. Món nợ của mày vừa tăng.',
+          WORK_END_MINUTES,
+          passed ? 'success' : 'danger',
+        ),
+      ],
     }
-
-    audioSynth.play('click')
-    applyTransition(createObservationChoiceTransition(currentState, currentVictim, selectedChoice))
+    finalizeAction(nextState)
   }
 
-  const launderDirtyMoney = () => {
-    const transition = createLaunderTransition(stateRef.current)
-    if (!transition.sound) {
-      audioSynth.play('click')
-    }
-    applyTransition(transition)
-  }
-
-  const buyUpgrade = (key: UpgradeKey) => {
-    audioSynth.play('click')
-    applyTransition(createBuyUpgradeTransition(stateRef.current, key))
-  }
-
-  const resolveActiveEventChoice = (choiceIndex: number) => {
+  const finishNight = () => {
     const currentState = stateRef.current
-    const activeEvent = RANDOM_EVENTS.find((event) => event.id === currentState.activeEventId)
-
-    if (!activeEvent) {
+    if (currentState.phase !== 'night') {
       return
-    }
-
-    const selectedChoice = activeEvent.choices[choiceIndex]
-
-    if (!selectedChoice) {
-      return
-    }
-
-    applyTransition(createEventChoiceTransition(currentState, selectedChoice, Date.now()))
-  }
-
-  const escapeBorder = () => {
-    audioSynth.play('click')
-    applyTransition(createEscapeTransition(stateRef.current))
-  }
-
-  const restartGame = () => {
-    if (findIntervalRef.current !== null) {
-      window.clearInterval(findIntervalRef.current)
-      findIntervalRef.current = null
-    }
-
-    if (victimTypingTimeoutRef.current !== null) {
-      window.clearTimeout(victimTypingTimeoutRef.current)
-      victimTypingTimeoutRef.current = null
     }
 
     audioSynth.play('upgrade')
-    dispatch({
-      type: 'replaceState',
-      state: createRestartState(stateRef.current),
+    if (currentState.day >= MAX_DAY) {
+      replaceState({
+        ...currentState,
+        phase: 'ended',
+        ending: createDayThreeEnding(currentState),
+      })
+      return
+    }
+
+    finalizeAction(createNextDayState(currentState), false)
+  }
+
+  const chooseEvent = (choiceIndex: number) => {
+    const currentState = stateRef.current
+    const event = GAME_EVENTS.find((item) => item.id === currentState.activeEventId)
+    const choice = event?.choices[choiceIndex]
+    if (!event || !choice) {
+      return
+    }
+
+    audioSynth.play(choice.clue ? 'upgrade' : 'click')
+    let nextState = applyEventEffects(currentState, choice.effects)
+    nextState = {
+      ...nextState,
+      activeEventId: null,
+      sentSignal: nextState.sentSignal || Boolean(choice.sendsSignal),
+      clues: addClue(nextState.clues, choice.clue),
+      incidents: [
+        ...nextState.incidents.slice(-20),
+        createLog(choice.result, nextState.timeMinutes, choice.clue ? 'success' : 'warning'),
+      ],
+    }
+    finalizeAction(nextState, false)
+  }
+
+  const tryEscape = () => {
+    const currentState = stateRef.current
+    if (currentState.clues.length < 2 || currentState.ending) {
+      replaceState(addToast(currentState, 'Cần ít nhất 2 manh mối để thử trốn.', 'warning'))
+      return
+    }
+
+    const chance = calculateEscapeChance(
+      currentState.clues.length,
+      currentState.stats.risk,
+      currentState.sentSignal,
+    )
+    const escaped = random() * 100 < chance
+    audioSynth.play(escaped ? 'upgrade' : 'alarm')
+    replaceState({
+      ...currentState,
+      phase: 'ended',
+      ending: escaped
+        ? {
+            type: 'escaped',
+            title: 'FREE',
+            description:
+              'Bạn rời compound đúng lúc đổi ca. Những bản ghi đã được gửi đi trước khi cánh cổng khép lại.',
+          }
+        : {
+            type: 'caught',
+            title: 'FAILED ESCAPE',
+            description:
+              'Bạn bị phát hiện ở cầu thang. Họ chuyển bạn sang khu khác, nơi cửa khóa kỹ hơn và không còn cửa sổ.',
+          },
     })
+  }
+
+  const toggleMuted = () => {
+    const nextMuted = !stateRef.current.isMuted
+    audioSynth.setMuted(nextMuted)
+    replaceState({
+      ...stateRef.current,
+      isMuted: nextMuted,
+    })
+  }
+
+  const restartGame = () => {
+    storage?.removeItem(SAVE_KEY)
+    audioSynth.play('upgrade')
+    replaceState(createInitialGameState())
   }
 
   useEffect(() => {
@@ -414,145 +549,92 @@ export const useSimulatorGame = (
   }, [state])
 
   useEffect(() => {
-    if (!state.hasStarted || state.gameOverType) {
+    if (!storage || state.showDisclaimer || state.isBooting) {
       return
     }
 
-    const intervalId = window.setInterval(() => {
-      applyTransitionEffect(createTickTransition(stateRef.current))
-
-      const latestState = stateRef.current
-
-      if (latestState.activeEventId || latestState.showRevealModal) {
-        return
-      }
-
-      const eventPool = RANDOM_EVENTS.filter((event) => isEventEligible(latestState, event))
-
-      if (eventPool.length > 0 && random() < RANDOM_EVENT_CHANCE) {
-        const randomEvent = eventPool[Math.floor(random() * eventPool.length)] ?? eventPool[0]
-        dispatch({
-          type: 'setActiveEvent',
-          eventId: randomEvent.id,
-        })
-        audioSynth.play('alarm')
-      }
-    }, PASSIVE_TICK_MS)
-
-    return () => {
-      window.clearInterval(intervalId)
+    const savedState = {
+      ...state,
+      lastSavedAt: new Date().toLocaleTimeString(),
+      toasts: [],
+      isTargetTyping: false,
+      activeEventId: null,
     }
-  }, [applyTransitionEffect, random, state.gameOverType, state.hasStarted])
+    storage.setItem(SAVE_KEY, JSON.stringify(savedState))
+  }, [state, storage])
 
   useEffect(() => {
-    const transition = createTitlePromotionTransition(state)
-
-    if (transition) {
-      applyTransitionEffect(transition)
-    }
-  }, [applyTransitionEffect, state])
-
-  useEffect(() => {
-    if (
-      state.activeEventId ||
-      state.revealTriggered ||
-      state.phase !== 'scam' ||
-      state.showRevealModal ||
-      state.completedCaseCount < REVEAL_CASE_THRESHOLD ||
-      state.cleanMoney < REVEAL_CLEAN_MONEY_THRESHOLD
-    ) {
+    if (state.toasts.length === 0) {
       return
     }
 
-    applyTransitionEffect(createRevealTransition())
-  }, [
-    applyTransitionEffect,
-    state.activeEventId,
-    state.cleanMoney,
-    state.completedCaseCount,
-    state.phase,
-    state.revealTriggered,
-    state.showRevealModal,
-  ])
+    const timeoutId = window.setTimeout(() => {
+      replaceState({
+        ...stateRef.current,
+        toasts: stateRef.current.toasts.slice(1),
+      })
+    }, 3200)
 
-  useEffect(() => {
-    if (state.phase !== 'surveillance' || !canUnlockEscapeRoute(state)) {
-      return
-    }
-
-    applyTransitionEffect(createEscapePhaseTransition())
-  }, [applyTransitionEffect, state])
-
-  useEffect(() => {
-    for (const toast of state.toasts) {
-      if (trackedToastIdsRef.current.has(toast.id)) {
-        continue
-      }
-
-      trackedToastIdsRef.current.add(toast.id)
-
-      window.setTimeout(() => {
-        trackedToastIdsRef.current.delete(toast.id)
-        dispatch({
-          type: 'removeToast',
-          id: toast.id,
-        })
-      }, TOAST_DURATION_MS)
-    }
+    return () => window.clearTimeout(timeoutId)
   }, [state.toasts])
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({
+    chatEndRef.current?.scrollIntoView?.({
       behavior: 'smooth',
     })
-  }, [state.chatMessages, state.isVictimTyping])
+  }, [state.chatMessages, state.isTargetTyping])
 
-  useEffect(() => {
-    return () => {
-      if (findIntervalRef.current !== null) {
-        window.clearInterval(findIntervalRef.current)
+  useEffect(
+    () => () => {
+      if (typingTimeoutRef.current !== null) {
+        window.clearTimeout(typingTimeoutRef.current)
       }
-
-      if (victimTypingTimeoutRef.current !== null) {
-        window.clearTimeout(victimTypingTimeoutRef.current)
+      if (bootTimeoutRef.current !== null) {
+        window.clearTimeout(bootTimeoutRef.current)
       }
-    }
-  }, [])
-
-  const currentVictim = getCurrentVictim(
-    state.activeVictimSession?.victimId ?? state.activeObservationTargetId,
+    },
+    [],
   )
-  const currentDialogue =
-    state.phase === 'scam' && currentVictim && state.activeVictimSession
-      ? currentVictim.script[state.activeVictimSession.stepIndex] ?? null
+
+  const activeTarget =
+    TARGETS.find((target) => target.id === state.activeTargetId) ?? TARGETS[0]
+  const activeTargetProgress =
+    state.targets.find((target) => target.id === activeTarget.id) ?? state.targets[0]
+  const activeEvent: GameEvent | null =
+    GAME_EVENTS.find((event) => event.id === state.activeEventId) ?? null
+  const currentScene =
+    activeTargetProgress.status === 'active'
+      ? activeTarget.scenes[activeTargetProgress.sceneIndex] ?? null
       : null
-  const activeEvent = RANDOM_EVENTS.find((event) => event.id === state.activeEventId) ?? null
 
   return {
     actions: {
       acceptDisclaimer,
-      acceptReveal,
-      buyUpgrade,
-      escapeBorder,
-      launderDirtyMoney,
-      resolveActiveEventChoice,
+      chooseDialogue,
+      chooseEvent,
+      endWorkDay,
+      finishNight,
+      performNightAction,
+      researchTarget,
       restartGame,
-      selectDialogueOption,
-      selectObservationChoice,
-      startFindingVictim,
+      selectTab,
+      selectTarget,
       toggleMuted,
+      tryEscape,
     },
     chatEndRef,
     derived: {
-      activeClues: state.unlockedClues,
       activeEvent,
-      canEscape:
-        state.phase === 'escape' &&
-        canUnlockEscapeRoute(state) &&
-        state.cleanMoney >= ESCAPE_COST,
-      currentDialogue,
-      currentVictim,
-      riskLevel: calculateRiskLevel(state),
+      activeTarget,
+      activeTargetProgress,
+      currentScene,
+      escapeChance: calculateEscapeChance(
+        state.clues.length,
+        state.stats.risk,
+        state.sentSignal,
+      ),
+      kpiPassed: isKpiPassed(state),
+      warningLevel: state.stats.risk > 70 ? 'HIGH' : state.stats.risk > 40 ? 'MEDIUM' : 'LOW',
     },
     state,
   }

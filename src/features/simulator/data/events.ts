@@ -1,47 +1,30 @@
-import type { RandomEventDefinition } from '@/features/simulator/types'
+import type { EventEffects, GameEvent } from '@/features/simulator/types'
 
-export const RANDOM_EVENTS: RandomEventDefinition[] = [
+const effects = (values: EventEffects): EventEffects => values
+
+export const GAME_EVENTS: GameEvent[] = [
   {
     id: 'generator-flicker',
     title: 'MẤT NHỊP ĐIỆN HÀNH LANG',
     description:
-      'Điện trong khu nhà chập chờn vài giây. Supervisor quát cả phòng phải giữ doanh số, nhưng camera cũng vừa tắt đúng một nhịp ngắn.',
-    conditions: {
-      phases: ['scam'],
-    },
+      'Điện chập chờn vài giây. Camera tắt đúng một nhịp trong khi supervisor vẫn quát cả phòng giữ doanh số.',
+    minimumDay: 1,
+    phase: 'work',
     choices: [
       {
-        text: 'Tranh thủ chép nhanh vài log chat sang chỗ riêng',
-        onSuccess: [
-          { type: 'adjustSuspicion', amount: 8 },
-          { type: 'adjustStress', amount: 6 },
-          { type: 'adjustEvidence', amount: 1 },
-          {
-            type: 'addNote',
-            note: 'Mỗi lần máy phát điện chập, camera trần dừng ghi khoảng ba giây.',
-          },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn tranh thủ lưu được vài dòng log trước khi điện ổn định trở lại.',
-              color: 'text-cyan-400',
-            },
-          },
-        ],
+        text: 'Tranh thủ chép log chat sang thẻ nhớ riêng',
+        result: 'Bạn lưu được một đoạn log trước khi điện ổn định trở lại.',
+        effects: effects({ health: 0, energy: -4, mental: -3, guilt: -2, empathy: 3, risk: 10, cash: 0, money: 0, messages: 0, reports: 0, minutes: 15 }),
+        clue: {
+          id: 'power-gap',
+          label: 'Camera ngừng ghi ba giây khi máy phát chuyển nhịp',
+          source: 'event',
+        },
       },
       {
-        text: 'Ngồi im và tiếp tục chạy kịch bản như chưa có gì',
-        onSuccess: [
-          { type: 'adjustHeat', amount: 4 },
-          { type: 'adjustSuspicion', amount: -4 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn chọn im lặng để giữ vị trí. Ca trực trôi đi nhưng cơn khó chịu không biến mất.',
-              color: 'text-slate-400',
-            },
-          },
-        ],
+        text: 'Ngồi im và tiếp tục chạy kịch bản',
+        result: 'Bạn giữ vị trí an toàn nhưng cơ hội biến mất cùng ánh đèn.',
+        effects: effects({ health: 0, energy: -2, mental: -4, guilt: 4, empathy: -2, risk: -4, cash: 0, money: 150, messages: 2, reports: 0, minutes: 15 }),
       },
     ],
   },
@@ -49,54 +32,19 @@ export const RANDOM_EVENTS: RandomEventDefinition[] = [
     id: 'patrol-sweep',
     title: 'ĐỢT KIỂM TRA HÀNH CHÍNH',
     description:
-      'Bảo vệ nội khu nhắn trước: tối nay có người đi kiểm tra đột xuất giấy tờ và phòng máy. Ai bị ghim sẽ phải ngồi riêng với quản lý.',
-    conditions: {
-      phases: ['scam'],
-      minimumHeat: 16,
-    },
+      'Bảo vệ nội khu báo tối nay có đợt kiểm tra giấy tờ và phòng máy. Người bị ghim sẽ phải ngồi riêng với quản lý.',
+    minimumDay: 1,
+    phase: 'work',
     choices: [
       {
-        text: 'Dùng tiền sạch bôi trơn để tên bạn không bị gọi ra',
-        requirements: {
-          currency: 'clean',
-          minimumAmount: 250,
-        },
-        onSuccess: [
-          { type: 'adjustMoney', currency: 'clean', amount: -250 },
-          { type: 'adjustHeat', amount: -12 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Một khoản bôi trơn nhỏ giúp hồ sơ tạm trú của bạn biến mất khỏi chồng giấy kiểm tra.',
-              color: 'text-emerald-400',
-            },
-          },
-        ],
-        onFailure: [
-          { type: 'adjustHeat', amount: 10 },
-          { type: 'adjustStress', amount: 8 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn không đủ tiền sạch để dập sóng. Tên bạn bị giữ lại trong danh sách cần để mắt.',
-              color: 'text-rose-500',
-            },
-          },
-        ],
+        text: 'Dùng tiền cá nhân để tên bạn biến khỏi danh sách',
+        result: 'Một khoản bôi trơn giúp hồ sơ của bạn trượt khỏi chồng giấy.',
+        effects: effects({ health: 0, energy: 0, mental: 2, guilt: 1, empathy: 0, risk: -12, cash: -10, money: 0, messages: 0, reports: 0, minutes: 10 }),
       },
       {
-        text: 'Giấu điện thoại phụ và chịu bị soi thêm một nhịp',
-        onSuccess: [
-          { type: 'adjustSuspicion', amount: 10 },
-          { type: 'adjustStress', amount: 10 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn ôm chặt ngăn bàn. Đợt kiểm tra qua đi nhưng ánh mắt supervisor bắt đầu nán lại lâu hơn.',
-              color: 'text-amber-400',
-            },
-          },
-        ],
+        text: 'Giấu ghi chép và chịu bị soi thêm',
+        result: 'Đợt kiểm tra qua đi nhưng ánh mắt supervisor nán lại lâu hơn.',
+        effects: effects({ health: 0, energy: -3, mental: -6, guilt: 0, empathy: 0, risk: 12, cash: 0, money: 0, messages: 0, reports: 0, minutes: 20 }),
       },
     ],
   },
@@ -104,53 +52,24 @@ export const RANDOM_EVENTS: RandomEventDefinition[] = [
     id: 'camera-pivot',
     title: 'CAMERA ĐỔI GÓC QUAY',
     description:
-      'Sau cú reveal, bạn nhận ra một camera trần vừa xoay thêm vài độ và giữ nguyên ngay phía trên bàn làm việc của mình.',
-    conditions: {
-      phases: ['surveillance', 'escape'],
-      revealTriggered: true,
-    },
+      'Camera trần xoay thêm vài độ và dừng ngay phía trên bàn làm việc của bạn.',
+    minimumDay: 2,
+    phase: 'work',
     choices: [
       {
-        text: 'Hạ tấm lọc màn hình và quay lại log nội bộ',
-        requirements: {
-          requiredUpgrade: 'screenDimmer',
-        },
-        onSuccess: [
-          { type: 'adjustSuspicion', amount: -12 },
-          { type: 'adjustStress', amount: 4 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Tấm lọc màn hình cứu bạn khỏi góc nhìn trực diện của camera.',
-              color: 'text-emerald-400',
-            },
-          },
-        ],
-        onFailure: [
-          { type: 'adjustSuspicion', amount: 18 },
-          { type: 'adjustStress', amount: 8 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn chưa có đủ đồ che màn hình. Camera quét qua, lưu lại một nhịp tay lạ của bạn.',
-              color: 'text-rose-500',
-            },
-          },
-        ],
+        text: 'Giả vờ xử lý KPI và giấu phần ghi chép',
+        result: 'Bạn giữ được vẻ bình thản nhưng phải bỏ dở việc đang làm.',
+        effects: effects({ health: 0, energy: -3, mental: -5, guilt: 2, empathy: 0, risk: -5, cash: 0, money: 100, messages: 2, reports: 0, minutes: 20 }),
       },
       {
-        text: 'Rời mắt khỏi bằng chứng, giả vờ chỉ đang xử lý KPI',
-        onSuccess: [
-          { type: 'adjustSuspicion', amount: -5 },
-          { type: 'adjustStress', amount: 6 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn giữ được vẻ bình thản, nhưng lại bỏ lỡ thêm một cơ hội để lưu thứ quan trọng.',
-              color: 'text-slate-400',
-            },
-          },
-        ],
+        text: 'Cố chụp góc camera và lối hành lang',
+        result: 'Bạn ghi lại được hướng quay, đổi lại camera giữ hình bàn bạn lâu hơn.',
+        effects: effects({ health: 0, energy: -4, mental: -4, guilt: -2, empathy: 3, risk: 14, cash: 0, money: 0, messages: 0, reports: 0, minutes: 20 }),
+        clue: {
+          id: 'camera-rotation',
+          label: 'Chu kỳ quay của camera trần khu workstation',
+          source: 'event',
+        },
       },
     ],
   },
@@ -158,44 +77,24 @@ export const RANDOM_EVENTS: RandomEventDefinition[] = [
     id: 'coworker-missing',
     title: 'MỘT BÀN LÀM VIỆC BỖNG TRỐNG',
     description:
-      'Bàn cạnh bạn đột nhiên bị dọn sạch. Không ai nhắc tên người vừa biến mất, chỉ còn màn hình đăng nhập treo trơ trọi.',
-    conditions: {
-      phases: ['surveillance'],
-      minimumSuspicion: 12,
-    },
+      'Bàn cạnh bạn bị dọn sạch. Không ai nhắc tên người vừa biến mất.',
+    minimumDay: 2,
+    phase: 'night',
     choices: [
       {
         text: 'Lén kiểm tra máy người đó trước khi ca trưởng quay lại',
-        onSuccess: [
-          { type: 'adjustSuspicion', amount: 14 },
-          { type: 'adjustStress', amount: 10 },
-          { type: 'adjustEvidence', amount: 1 },
-          {
-            type: 'unlockClue',
-            clue: 'Danh sách ca trực bị đưa đi “làm việc riêng” sau khi ghi log nội bộ',
-          },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn lôi ra được danh sách ca trực bị gọi đi rồi biến mất khỏi khu nhà.',
-              color: 'text-cyan-400',
-            },
-          },
-        ],
+        result: 'Bạn tìm thấy danh sách người bị đưa đi “làm việc riêng”.',
+        effects: effects({ health: 0, energy: -6, mental: -8, guilt: -2, empathy: 4, risk: 14, cash: 0, money: 0, messages: 0, reports: 0, minutes: 0 }),
+        clue: {
+          id: 'missing-workers',
+          label: 'Danh sách nhân viên biến mất sau các buổi thẩm vấn',
+          source: 'event',
+        },
       },
       {
-        text: 'Làm như không thấy gì để bảo toàn mạng sống',
-        onSuccess: [
-          { type: 'adjustStress', amount: 12 },
-          { type: 'adjustSuspicion', amount: -4 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn không dám ngó sang. Sự im lặng của cả phòng còn nặng hơn tiếng quạt trần.',
-              color: 'text-amber-400',
-            },
-          },
-        ],
+        text: 'Làm như không thấy để bảo toàn mạng sống',
+        result: 'Bạn quay mặt đi. Sự im lặng của cả phòng nặng hơn tiếng quạt.',
+        effects: effects({ health: 0, energy: 2, mental: -7, guilt: 6, empathy: -3, risk: -5, cash: 0, money: 0, messages: 0, reports: 0, minutes: 0 }),
       },
     ],
   },
@@ -203,55 +102,25 @@ export const RANDOM_EVENTS: RandomEventDefinition[] = [
     id: 'victim-callback',
     title: 'NẠN NHÂN GỌI LẠI',
     description:
-      'Một máy khác đổ chuông liên tục. Nạn nhân từ ca chiều đã tìm được số phụ và đang khóc lóc xin trả lại tiền.',
-    conditions: {
-      phases: ['surveillance', 'escape'],
-      minimumEvidence: 1,
-      revealTriggered: true,
-    },
+      'Một máy khác đổ chuông. Nạn nhân ca chiều đang khóc và xin trả lại tiền.',
+    minimumDay: 2,
+    phase: 'work',
     choices: [
       {
-        text: 'Bật máy ghi âm, giữ line càng lâu càng tốt',
-        requirements: {
-          requiredUpgrade: 'audioRecorder',
+        text: 'Giữ line đủ lâu để ghi lại lời khai',
+        result: 'Bạn giữ được một cuộc gọi có thể nối với hồ sơ của compound.',
+        effects: effects({ health: 0, energy: -5, mental: -9, guilt: -5, empathy: 7, risk: 13, cash: 0, money: 0, messages: 3, reports: 0, minutes: 25 }),
+        clue: {
+          id: 'callback-recording',
+          label: 'Bản ghi cuộc gọi của nạn nhân từ ca trước',
+          source: 'event',
         },
-        onSuccess: [
-          { type: 'adjustEvidence', amount: 1 },
-          { type: 'adjustSuspicion', amount: 10 },
-          { type: 'adjustStress', amount: 12 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn giữ lại được thêm một cuộc gọi tuyệt vọng có thể dùng làm bằng chứng.',
-              color: 'text-emerald-400',
-            },
-          },
-        ],
-        onFailure: [
-          { type: 'adjustStress', amount: 10 },
-          { type: 'adjustSuspicion', amount: 12 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn chưa có máy ghi âm nhưng vẫn đứng khựng lại quá lâu trước cuộc gọi ấy.',
-              color: 'text-rose-500',
-            },
-          },
-        ],
+        sendsSignal: true,
       },
       {
         text: 'Cúp máy ngay để tránh bị phát hiện',
-        onSuccess: [
-          { type: 'adjustSuspicion', amount: -6 },
-          { type: 'adjustStress', amount: 8 },
-          {
-            type: 'addLog',
-            entry: {
-              text: 'Bạn bấm ngắt và nhìn màn hình tối lại. Cách an toàn nhất cũng là cách khó thở nhất.',
-              color: 'text-slate-400',
-            },
-          },
-        ],
+        result: 'Màn hình tối lại. Cách an toàn nhất cũng là cách khó thở nhất.',
+        effects: effects({ health: 0, energy: -2, mental: -7, guilt: 7, empathy: -4, risk: -6, cash: 0, money: 0, messages: 1, reports: 0, minutes: 10 }),
       },
     ],
   },

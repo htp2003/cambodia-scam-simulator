@@ -1,782 +1,241 @@
 import {
-  CLUE_REQUIRED,
-  ESCAPE_COST,
-  EVIDENCE_REQUIRED,
-  INITIAL_LOGS,
-  INITIAL_PLAYER_TITLE,
-  LAUNDER_RATE,
-  MAX_HEAT,
-  MAX_STRESS,
-  MAX_SUSPICION,
-  PLAYER_TITLE_THRESHOLDS,
-  RESTART_LOGS,
+  MAX_DAY,
+  NIGHT_CLUES,
+  SAVE_VERSION,
+  WORK_END_MINUTES,
+  WORK_START_MINUTES,
 } from '@/features/simulator/data/constants'
-import { createInitialUpgradeState } from '@/features/simulator/data/upgrades'
+import { TARGETS } from '@/features/simulator/data/victims'
 import type {
-  GameOverType,
+  ChoiceEffects,
+  EscapeClue,
+  EventEffects,
+  GameEnding,
   GameState,
-  GameTransition,
-  ObservationChoice,
-  RandomEventChoice,
-  RiskLevel,
-  SoundEffect,
-  UpgradeDefinition,
-  UpgradeKey,
-  VictimScenario,
+  LogEntry,
+  PlayerStats,
+  TargetProgress,
 } from '@/features/simulator/types'
 
-export interface DialogueResolutionInput {
-  choiceIndex: number
-  roll: number
-  state: GameState
-  victim: VictimScenario
+const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)))
+
+let idSequence = 0
+
+export const createId = (prefix: string) => `${prefix}-${Date.now()}-${idSequence++}`
+
+export const formatTime = (minutes: number) => {
+  const normalized = Math.min(minutes, 23 * 60 + 59)
+  const hours = Math.floor(normalized / 60)
+  const remainder = normalized % 60
+  return `${String(hours).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
 }
 
-const clampMeter = (value: number, max: number) => Math.round(Math.min(max, Math.max(0, value)))
+export const createLog = (
+  text: string,
+  timeMinutes: number,
+  tone: LogEntry['tone'] = 'neutral',
+): LogEntry => ({
+  id: createId('log'),
+  text,
+  time: formatTime(timeMinutes),
+  tone,
+})
 
-const appendUnique = (items: string[], value?: string) => {
-  if (!value || items.includes(value)) {
-    return items
-  }
-
-  return [...items, value]
-}
-
-const getUpgradeSuspicionFactor = (state: GameState) => {
-  const screenDimmerModifier =
-    (state.upgrades.screenDimmer.suspicionModifier ?? 0) * state.upgrades.screenDimmer.level
-  const privateProxyModifier =
-    (state.upgrades.privateProxy.suspicionModifier ?? 0) * state.upgrades.privateProxy.level
-
-  return Math.max(0.45, 1 + screenDimmerModifier + privateProxyModifier)
-}
-
-const getUpgradeStressFactor = (state: GameState) => {
-  const hiddenPhoneModifier =
-    (state.upgrades.hiddenPhone.stressModifier ?? 0) * state.upgrades.hiddenPhone.level
-
-  return Math.max(0.65, 1 + hiddenPhoneModifier)
-}
-
-const resolveLossType = (heat: number, suspicion: number, stress: number): GameOverType => {
-  if (heat >= MAX_HEAT) {
-    return 'raid'
-  }
-
-  if (suspicion >= MAX_SUSPICION) {
-    return 'exposed'
-  }
-
-  if (stress >= MAX_STRESS) {
-    return 'burnout'
-  }
-
-  return null
-}
-
-const buildScore = (state: Pick<GameState, 'cleanMoney' | 'evidence' | 'unlockedClues'>) =>
-  state.cleanMoney + state.evidence * 2_200 + state.unlockedClues.length * 900
-
-const getUpgradeCostScale = (upgrade: UpgradeDefinition) => {
-  if (upgrade.maxLevel === 1) {
-    return 1
-  }
-
-  return 1.65
-}
-
-export const clampHeat = (value: number) => clampMeter(value, MAX_HEAT)
-
-export const clampSuspicion = (value: number) => clampMeter(value, MAX_SUSPICION)
-
-export const clampStress = (value: number) => clampMeter(value, MAX_STRESS)
-
-export const getPlayerTitle = (score: number) => {
-  const matchedThreshold = PLAYER_TITLE_THRESHOLDS.find(({ minimumScore }) => score >= minimumScore)
-
-  return matchedThreshold?.title ?? INITIAL_PLAYER_TITLE
-}
-
-export const calculateRiskLevel = (
-  state: Pick<GameState, 'heat' | 'stress' | 'suspicion'>,
-): RiskLevel => {
-  const maxRisk = Math.max(state.heat, state.stress, state.suspicion)
-
-  if (maxRisk >= 80) {
-    return 'critical'
-  }
-
-  if (maxRisk >= 55) {
-    return 'high'
-  }
-
-  if (maxRisk >= 30) {
-    return 'medium'
-  }
-
-  return 'low'
-}
-
-export const canUnlockEscapeRoute = (
-  state: Pick<GameState, 'evidence' | 'unlockedClues' | 'upgrades' | 'revealTriggered'>,
-) =>
-  state.revealTriggered &&
-  state.evidence >= EVIDENCE_REQUIRED &&
-  state.unlockedClues.length >= CLUE_REQUIRED &&
-  state.upgrades.hiddenPhone.level > 0 &&
-  state.upgrades.privateProxy.level > 0
+export const createTargetProgress = (): TargetProgress[] =>
+  TARGETS.map((target) => ({
+    id: target.id,
+    sceneIndex: 0,
+    researched: false,
+    status: 'active',
+    trust: 20,
+    suspicion: 10,
+    moneyCollected: 0,
+  }))
 
 export const createInitialGameState = (): GameState => ({
-  dirtyMoney: 0,
-  cleanMoney: 0,
-  withdrawnMoney: 0,
-  heat: 0,
-  stress: 0,
-  suspicion: 0,
-  evidence: 0,
-  phase: 'scam',
-  revealTriggered: false,
-  showRevealModal: false,
-  hasStarted: false,
-  showDisclaimer: true,
-  isMuted: false,
-  playerTitle: INITIAL_PLAYER_TITLE,
-  logs: INITIAL_LOGS.map((entry, index) => ({
-    ...entry,
-    id: `initial-log-${index + 1}`,
-    time: `00:00:0${index + 1}`,
-  })),
-  toasts: [],
-  isFinding: false,
-  findProgress: 0,
-  activeVictimSession: null,
-  activeObservationTargetId: null,
-  isVictimTyping: false,
-  chatMessages: [],
-  activeEventId: null,
-  gameOverType: null,
-  upgrades: createInitialUpgradeState(),
-  notes: [],
-  unlockedClues: [],
-  completedCaseCount: 0,
-})
-
-export const createDisclaimerTransition = (): GameTransition => ({
-  changes: {
-    hasStarted: true,
-    showDisclaimer: false,
+  saveVersion: SAVE_VERSION,
+  day: 1,
+  timeMinutes: WORK_START_MINUTES,
+  phase: 'work',
+  activeTab: 'chat',
+  activeTargetId: TARGETS[0].id,
+  stats: {
+    health: 80,
+    energy: 75,
+    mental: 72,
+    guilt: 20,
+    empathy: 55,
+    risk: 15,
+    cash: 20,
   },
-  sound: 'upgrade',
+  kpi: {
+    money: 3000,
+    messages: 24,
+    reportsMax: 3,
+  },
+  progress: {
+    money: 0,
+    messages: 0,
+    reports: 0,
+  },
+  targets: createTargetProgress(),
+  chatMessages: [],
+  clues: [],
+  logs: [
+    createLog('System boot completed. Workstation A-102 authenticated.', WORK_START_MINUTES),
+  ],
+  incidents: [
+    createLog('Tony: KPI hôm nay không có lý do để thấp.', WORK_START_MINUTES, 'warning'),
+  ],
+  toasts: [],
+  nightActionsUsed: 0,
+  researchedToday: [],
+  triggeredEventIds: [],
+  sentSignal: false,
+  showDisclaimer: true,
+  isBooting: false,
+  isMuted: false,
+  isTargetTyping: false,
+  activeEventId: null,
+  ending: null,
+  lastSavedAt: null,
 })
 
-export const createTickTransition = (state: GameState): GameTransition => {
-  const changes: Partial<GameState> = {}
-  const appendLogs: NonNullable<GameTransition['appendLogs']> = []
+const applyStats = (
+  stats: PlayerStats,
+  values: Pick<
+    ChoiceEffects | EventEffects,
+    'health' | 'energy' | 'mental' | 'guilt' | 'empathy' | 'risk'
+  > & { cash?: number },
+): PlayerStats => ({
+  health: clamp(stats.health + values.health),
+  energy: clamp(stats.energy + values.energy),
+  mental: clamp(stats.mental + values.mental),
+  guilt: clamp(stats.guilt + values.guilt),
+  empathy: clamp(stats.empathy + values.empathy),
+  risk: clamp(stats.risk + values.risk),
+  cash: Math.max(0, stats.cash + (values.cash ?? 0)),
+})
 
-  if (state.phase === 'scam') {
-    if (!state.activeVictimSession && !state.isFinding && state.heat > 0) {
-      changes.heat = clampHeat(state.heat - 1)
-    }
-  } else {
-    const nextSuspicion = clampSuspicion(
-      state.suspicion + (state.activeObservationTargetId ? 3 : 1) * getUpgradeSuspicionFactor(state),
-    )
-    const nextStress = clampStress(
-      state.stress + (state.activeObservationTargetId ? 5 : 3) * getUpgradeStressFactor(state),
-    )
+export const applyChoiceEffects = (state: GameState, values: ChoiceEffects): GameState => ({
+  ...state,
+  timeMinutes: Math.min(WORK_END_MINUTES, state.timeMinutes + values.minutes),
+  stats: applyStats(state.stats, values),
+  progress: {
+    money: Math.max(0, state.progress.money + values.money),
+    messages: Math.max(0, state.progress.messages + values.messages),
+    reports: state.progress.reports,
+  },
+})
 
-    changes.suspicion = nextSuspicion
-    changes.stress = nextStress
+export const applyEventEffects = (state: GameState, values: EventEffects): GameState => ({
+  ...state,
+  timeMinutes: Math.min(WORK_END_MINUTES, state.timeMinutes + values.minutes),
+  stats: applyStats(state.stats, values),
+  progress: {
+    money: Math.max(0, state.progress.money + values.money),
+    messages: Math.max(0, state.progress.messages + values.messages),
+    reports: Math.max(0, state.progress.reports + values.reports),
+  },
+})
 
-    if (!state.activeObservationTargetId && state.heat > 0) {
-      changes.heat = clampHeat(state.heat - 1)
-    }
-
-    if (nextStress >= 70 && state.stress < 70) {
-      appendLogs.push({
-        text: 'Nhịp tim của bạn bắt đầu lạc điệu. Ở lại thêm trong căn phòng này đang bào mòn thần kinh.',
-        color: 'text-amber-400',
-      })
-    }
+export const addClue = (clues: EscapeClue[], clue?: EscapeClue): EscapeClue[] => {
+  if (!clue || clues.some((item) => item.id === clue.id)) {
+    return clues
   }
 
-  const nextHeat = changes.heat ?? state.heat
-  const nextSuspicion = changes.suspicion ?? state.suspicion
-  const nextStress = changes.stress ?? state.stress
-  const gameOverType = resolveLossType(nextHeat, nextSuspicion, nextStress)
-  let sound: SoundEffect | undefined
-
-  if (gameOverType) {
-    changes.gameOverType = gameOverType
-    sound = 'alarm'
-  }
-
-  return {
-    changes,
-    appendLogs,
-    sound,
-  }
+  return [...clues, clue]
 }
 
-export const createTitlePromotionTransition = (state: GameState): GameTransition | null => {
-  const nextTitle = getPlayerTitle(buildScore(state))
+export const calculateEscapeChance = (
+  clueCount: number,
+  risk: number,
+  sentSignal: boolean,
+) => Math.max(5, Math.min(95, clueCount * 25 - Math.floor(risk / 3) + (sentSignal ? 15 : 0)))
 
-  if (nextTitle === state.playerTitle) {
+export const isKpiPassed = (state: GameState) =>
+  state.progress.money >= state.kpi.money &&
+  state.progress.messages >= state.kpi.messages &&
+  state.progress.reports <= state.kpi.reportsMax
+
+export const resolveCollapsedEnding = (state: GameState): GameEnding | null => {
+  if (state.stats.health > 0 && state.stats.mental > 0) {
     return null
   }
 
   return {
-    changes: {
-      playerTitle: nextTitle,
-    },
-    appendLogs: [
-      {
-        text: `Bạn vừa tự nhìn mình bằng một cái tên khác: ${nextTitle}.`,
-        color: 'text-amber-400 font-bold',
-      },
-    ],
-    appendToasts: [
-      {
-        text: `Danh xưng mới: ${nextTitle}`,
-        type: 'success',
-      },
-    ],
-    sound: 'upgrade',
+    type: 'collapsed',
+    title: 'GỤC TRONG CA TRỰC',
+    description:
+      'Cơ thể hoặc tinh thần của bạn không chịu thêm được nữa. Căn phòng vẫn sáng đèn khi bạn bị kéo khỏi bàn.',
   }
 }
 
-export const createLaunderTransition = (state: GameState): GameTransition => {
-  if (state.dirtyMoney <= 0) {
-    return {
-      appendToasts: [
-        {
-          text: 'Không còn khoản tiền bẩn nào để xoay vòng.',
-          type: 'warning',
-        },
-      ],
-    }
-  }
-
-  const processed = state.dirtyMoney
-  const washed = Math.floor(processed * LAUNDER_RATE)
-
-  return {
-    changes: {
-      dirtyMoney: 0,
-      cleanMoney: state.cleanMoney + washed,
-    },
-    appendLogs: [
-      {
-        text: `Bạn vừa đẩy $${processed.toLocaleString()} qua lớp vỏ bọc và giữ lại $${washed.toLocaleString()} tiền sạch.`,
-        color: 'text-cyan-400 font-bold',
-      },
-    ],
-    appendToasts: [
-      {
-        text: `Tiền sạch cộng thêm $${washed.toLocaleString()}`,
-        type: 'success',
-      },
-    ],
-    sound: 'cash',
-  }
-}
-
-const isUpgradeUnlockedInPhase = (phase: GameState['phase'], upgrade: UpgradeDefinition) =>
-  upgrade.availablePhase === phase || (phase === 'escape' && upgrade.availablePhase === 'surveillance')
-
-export const createBuyUpgradeTransition = (
-  state: GameState,
-  key: UpgradeKey,
-): GameTransition => {
-  const selectedUpgrade = state.upgrades[key]
-
-  if (!isUpgradeUnlockedInPhase(state.phase, selectedUpgrade)) {
-    return {
-      appendToasts: [
-        {
-          text:
-            selectedUpgrade.availablePhase === 'surveillance'
-              ? 'Món này chỉ có ích sau khi bạn bắt đầu nhìn thấy mặt sau của hệ thống.'
-              : 'Món này không còn phù hợp với giai đoạn hiện tại.',
-          type: 'warning',
-        },
-      ],
-    }
-  }
-
-  if (selectedUpgrade.level >= selectedUpgrade.maxLevel) {
-    return {
-      appendToasts: [
-        {
-          text: 'Bạn đã ép món này tới giới hạn của nó rồi.',
-          type: 'warning',
-        },
-      ],
-    }
-  }
-
-  const availableMoney =
-    selectedUpgrade.currency === 'clean' ? state.cleanMoney : state.dirtyMoney
-
-  if (availableMoney < selectedUpgrade.cost) {
-    return {
-      appendToasts: [
-        {
-          text:
-            selectedUpgrade.currency === 'clean'
-              ? 'Bạn chưa có đủ tiền sạch cho món này.'
-              : 'Bạn chưa có đủ tiền bẩn cho món này.',
-          type: 'warning',
-        },
-      ],
-    }
-  }
-
-  const nextUpgradeLevel = selectedUpgrade.level + 1
-  const nextCost =
-    nextUpgradeLevel >= selectedUpgrade.maxLevel
-      ? selectedUpgrade.cost
-      : Math.round(selectedUpgrade.cost * getUpgradeCostScale(selectedUpgrade))
-
-  const nextUpgrades = {
-    ...state.upgrades,
-    [key]: {
-      ...selectedUpgrade,
-      level: nextUpgradeLevel,
-      cost: nextCost,
-    },
-  }
-
-  const changes: Partial<GameState> = {
-    upgrades: nextUpgrades,
-  }
-
-  if (selectedUpgrade.currency === 'clean') {
-    changes.cleanMoney = state.cleanMoney - selectedUpgrade.cost
-  } else {
-    changes.dirtyMoney = state.dirtyMoney - selectedUpgrade.cost
-  }
-
-  const logTextMap: Record<UpgradeKey, string> = {
-    keyboard: 'Nhịp quét mục tiêu nhanh lên. Mỗi lần vào line mới bớt đi vài giây chần chừ.',
-    vpn: 'Một lớp định tuyến mới giúp heat tăng chậm hơn trong các cú ép nạp.',
-    audioRecorder: 'Bạn có thêm một đường lưu âm thầm cho những gì căn phòng này muốn chôn kín.',
-    screenDimmer: 'Màn hình tối đi vừa đủ để người đứng sau lưng khó đọc được bạn đang mở gì.',
-    hiddenPhone: 'Một chiếc điện thoại phụ cuối cùng cũng nằm yên trong ngăn bàn, chờ đến lúc phải dùng.',
-    privateProxy: 'Bạn có một tuyến chuyển dữ liệu ngoài sổ, đủ để ném bằng chứng đi trước khi bị khóa máy.',
-  }
-
-  return {
-    changes,
-    appendLogs: [
-      {
-        text: logTextMap[key],
-        color: 'text-slate-300',
-      },
-    ],
-    appendToasts: [
-      {
-        text: `Đã chuẩn bị: ${selectedUpgrade.name}`,
-        type: 'success',
-      },
-    ],
-    sound: 'upgrade',
-  }
-}
-
-export const createDialogueChoiceTransition = ({
-  choiceIndex,
-  roll,
-  state,
-  victim,
-}: DialogueResolutionInput): GameTransition => {
-  const activeVictimSession = state.activeVictimSession
-
-  if (!activeVictimSession) {
-    return {}
-  }
-
-  const dialogueNode = victim.script[activeVictimSession.stepIndex]
-  const selectedChoice = dialogueNode?.choices[choiceIndex]
-
-  if (!dialogueNode || !selectedChoice) {
-    return {}
-  }
-
-  const vpnFactor = Math.max(
-    0.45,
-    1 + (state.upgrades.vpn.heatModifier ?? 0) * state.upgrades.vpn.level,
-  )
-  const finalHeat = Math.round(selectedChoice.heat * vpnFactor)
-  const nextHeat = clampHeat(state.heat + finalHeat)
-  const isSuccessful = roll <= selectedChoice.success
-  const changes: Partial<GameState> = {
-    heat: nextHeat,
-  }
-  const appendLogs: NonNullable<GameTransition['appendLogs']> = []
-  const appendToasts: NonNullable<GameTransition['appendToasts']> = []
-  let sound: SoundEffect | undefined
-
-  if (isSuccessful) {
-    if (selectedChoice.dirty > 0) {
-      changes.dirtyMoney = state.dirtyMoney + selectedChoice.dirty
-      appendLogs.push({
-        text: `Mục tiêu vừa nạp thêm $${selectedChoice.dirty.toLocaleString()} vào vòng xoáy.`,
-        color: 'text-emerald-400 font-bold',
-      })
-      appendToasts.push({
-        text: `Tiền bẩn +$${selectedChoice.dirty.toLocaleString()}`,
-        type: 'success',
-      })
-      sound = 'cash'
-    }
-
-    if (selectedChoice.next === -1) {
-      return {
-        changes: {
-          ...changes,
-          activeVictimSession: null,
-          isVictimTyping: false,
-          completedCaseCount: state.completedCaseCount + 1,
-        },
-        appendChatMessages: [
-          {
-            sender: 'system',
-            text: `Ca của ${victim.name} đã khép lại. Màn hình được dọn sạch nhanh hơn cả cảm giác tội lỗi.`,
-          },
-        ],
-        appendLogs: [
-          ...appendLogs,
-          {
-            text: `Bạn vừa khép lại một case của ${victim.name}. Căn phòng vẫn tiếp tục như chưa hề có ai khóc ở đầu dây bên kia.`,
-            color: 'text-slate-500',
-          },
-        ],
-        appendToasts,
-        sound,
-      }
-    }
-
-    return {
-      changes: {
-        ...changes,
-        activeVictimSession: {
-          victimId: victim.id,
-          stepIndex: selectedChoice.next,
-        },
-      },
-      appendLogs,
-      appendToasts,
-      sound,
-    }
-  }
-
-  return {
-    changes: {
-      ...changes,
-      activeVictimSession: null,
-      isVictimTyping: false,
-      completedCaseCount: state.completedCaseCount + 1,
-    },
-    appendLogs: [
-      {
-        text: `${victim.name} đã nghi ngờ và cắt line. Bạn nghe thấy supervisor chép miệng ở phía sau.`,
-        color: 'text-rose-500 font-bold',
-      },
-    ],
-    appendToasts: [
-      {
-        text: 'Mục tiêu đã tỉnh ra và rời cuộc trò chuyện.',
-        type: 'warning',
-      },
-    ],
-    appendChatMessages: [
-      {
-        sender: 'system',
-        text: `${victim.name} đã thoát khỏi line này. Màn hình mới đang chờ bạn mở tiếp.`,
-      },
-    ],
-    sound: sound ?? 'fail',
-  }
-}
-
-export const createObservationChoiceTransition = (
-  state: GameState,
-  victim: VictimScenario,
-  choice: ObservationChoice,
-): GameTransition => {
-  const suspicionFactor = getUpgradeSuspicionFactor(state)
-  const stressFactor = getUpgradeStressFactor(state)
-  const evidenceBonus =
-    choice.evidence > 0
-      ? state.upgrades.audioRecorder.level * (state.upgrades.audioRecorder.evidenceBonus ?? 0)
-      : 0
-  const nextHeat = clampHeat(state.heat + choice.heat)
-  const nextSuspicion = clampSuspicion(state.suspicion + choice.suspicion * suspicionFactor)
-  const nextStress = clampStress(state.stress + choice.stress * stressFactor)
-  const nextEvidence = Math.max(0, state.evidence + choice.evidence + evidenceBonus)
-  const nextDirtyMoney = Math.max(0, state.dirtyMoney + choice.dirtyMoney)
-  const nextCleanMoney = Math.max(0, state.cleanMoney + choice.cleanMoney)
-  const nextNotes = appendUnique(state.notes, choice.note)
-  const nextClues = appendUnique(state.unlockedClues, choice.unlockClue)
-  const lossType = resolveLossType(nextHeat, nextSuspicion, nextStress)
-
-  return {
-    changes: {
-      activeObservationTargetId: null,
-      cleanMoney: nextCleanMoney,
-      completedCaseCount: state.completedCaseCount + 1,
-      dirtyMoney: nextDirtyMoney,
-      evidence: nextEvidence,
-      gameOverType: lossType,
-      heat: nextHeat,
-      isVictimTyping: false,
-      notes: nextNotes,
-      suspicion: nextSuspicion,
-      stress: nextStress,
-      unlockedClues: nextClues,
-    },
-    appendChatMessages: [
-      {
-        sender: 'system',
-        text: choice.resultText,
-      },
-      {
-        sender: 'system',
-        text: `Case giám sát của ${victim.name} đã đóng. Bạn phải tự quyết xem mình vừa sống sót hay vừa lún sâu hơn.`,
-      },
-    ],
-    appendLogs: [
-      {
-        text: `${victim.name}: ${victim.redFlags.join(', ')}.`,
-        color: 'text-amber-400',
-      },
-      {
-        text: choice.resultText,
-        color: lossType ? 'text-rose-500' : 'text-slate-300',
-      },
-    ],
-    appendToasts: choice.toast ? [choice.toast] : undefined,
-    sound: lossType ? 'alarm' : choice.evidence > 0 ? 'cash' : 'click',
-  }
-}
-
-export const createRevealTransition = (): GameTransition => ({
-  changes: {
-    phase: 'surveillance',
-    revealTriggered: true,
-    showRevealModal: true,
-    activeVictimSession: null,
-    activeObservationTargetId: null,
-    findProgress: 0,
-    isFinding: false,
-    isVictimTyping: false,
+export const createNextDayState = (state: GameState): GameState => ({
+  ...state,
+  day: state.day + 1,
+  timeMinutes: WORK_START_MINUTES,
+  phase: 'work',
+  activeTab: 'chat',
+  progress: {
+    money: 0,
+    messages: 0,
+    reports: 0,
   },
-  appendLogs: [
-    {
-      text: 'Một cửa sổ quản trị ẩn vừa bật lên. Danh sách camera nội bộ và bảng KPI thật của khu nhà xuất hiện ngay trước mặt bạn.',
-      color: 'text-rose-500 font-bold',
-    },
-  ],
-  appendToasts: [
-    {
-      text: 'Cú reveal đã tới. Bạn không còn chỉ là người vận hành line nữa.',
-      type: 'warning',
-    },
-  ],
-  sound: 'alarm',
-})
-
-export const createRevealAcceptanceTransition = (): GameTransition => ({
-  changes: {
-    showRevealModal: false,
+  kpi: {
+    money: state.kpi.money + 900,
+    messages: state.kpi.messages + 7,
+    reportsMax: state.kpi.reportsMax,
   },
-  replaceChatMessages: [
-    {
-      sender: 'system',
-      text: 'Màn hình mới mở ra: camera trần, lịch đổi ca, ví lạnh, bảng KPI và danh sách người biến mất.',
-    },
-    {
-      sender: 'system',
-      text: 'Mục tiêu mới: sống sót đủ lâu để gom bằng chứng và rời khỏi nơi này trước khi bị gọi tên.',
-    },
-  ],
-  appendLogs: [
-    {
-      text: 'Bạn đã nhìn thấy mặt sau của công việc. Từ đây trở đi, mỗi thao tác đều có thể là vé ra ngoài hoặc vé biến mất.',
-      color: 'text-cyan-400',
-    },
+  targets: createTargetProgress(),
+  chatMessages: [],
+  nightActionsUsed: 0,
+  researchedToday: [],
+  activeEventId: null,
+  logs: [
+    createLog(
+      `Ngày ${state.day + 1} bắt đầu. KPI đã được nâng mà không cần giải thích.`,
+      WORK_START_MINUTES,
+      'warning',
+    ),
   ],
 })
 
-export const createEscapePhaseTransition = (): GameTransition => ({
-  changes: {
-    phase: 'escape',
-  },
-  appendLogs: [
-    {
-      text: 'Các mảnh bằng chứng đã đủ để ghép thành một đường thoát. Chỉ còn thiếu tiền sạch và một nhịp rút chân đúng lúc.',
-      color: 'text-emerald-400 font-bold',
-    },
-  ],
-  appendToasts: [
-    {
-      text: 'Đường thoát thân đã mở.',
-      type: 'success',
-    },
-  ],
-  sound: 'upgrade',
-})
-
-export const createEscapeTransition = (state: GameState): GameTransition => {
-  if (!canUnlockEscapeRoute(state) || state.phase !== 'escape') {
+export const createDayThreeEnding = (state: GameState): GameEnding => {
+  if (state.stats.empathy < 30 && state.progress.money >= state.kpi.money) {
     return {
-      appendToasts: [
-        {
-          text: 'Bạn chưa ghép đủ bằng chứng và công cụ để rời khỏi khu nhà này.',
-          type: 'warning',
-        },
-      ],
-    }
-  }
-
-  if (state.cleanMoney < ESCAPE_COST) {
-    return {
-      appendToasts: [
-        {
-          text: `Bạn cần tối thiểu $${ESCAPE_COST.toLocaleString()} tiền sạch để mua đường ra ngoài.`,
-          type: 'warning',
-        },
-      ],
+      type: 'manager',
+      title: 'THE MANAGER',
+      description:
+        'Bạn sống sót bằng cách trở thành một phần của bộ máy. Một bàn mới được kê cho bạn, lần này quay mặt về phía những người khác.',
     }
   }
 
   return {
-    changes: {
-      cleanMoney: state.cleanMoney - ESCAPE_COST,
-      withdrawnMoney: state.withdrawnMoney + ESCAPE_COST,
-      gameOverType: 'win',
-    },
+    type: 'trapped',
+    title: 'STILL TRAPPED',
+    description:
+      'Ba ngày trôi qua. Bạn chưa thoát, nhưng những manh mối vẫn còn được giấu kỹ. Hy vọng chưa biến mất, chỉ bị khóa sau một cánh cửa khác.',
   }
 }
 
-const meetsChoiceRequirements = (state: GameState, choice: RandomEventChoice) => {
-  const { requirements } = choice
+export const getNightClue = (action: 'window' | 'coworker') => NIGHT_CLUES[action]
 
-  if (!requirements) {
-    return true
-  }
-
-  if (requirements.requiredUpgrade && state.upgrades[requirements.requiredUpgrade].level <= 0) {
+export const isValidSavedState = (value: unknown): value is GameState => {
+  if (!value || typeof value !== 'object') {
     return false
   }
 
-  if (
-    requirements.currency &&
-    requirements.minimumAmount !== undefined &&
-    ((requirements.currency === 'dirty' && state.dirtyMoney < requirements.minimumAmount) ||
-      (requirements.currency === 'clean' && state.cleanMoney < requirements.minimumAmount))
-  ) {
-    return false
-  }
-
-  return true
-}
-
-export const createEventChoiceTransition = (
-  state: GameState,
-  choice: RandomEventChoice,
-  _now?: number,
-): GameTransition => {
-  const operations = meetsChoiceRequirements(state, choice) ? choice.onSuccess : choice.onFailure ?? []
-  const changes: Partial<GameState> = {
-    activeEventId: null,
-  }
-  const appendLogs: NonNullable<GameTransition['appendLogs']> = []
-  const appendToasts: NonNullable<GameTransition['appendToasts']> = []
-  let nextNotes = state.notes
-  let nextClues = state.unlockedClues
-
-  for (const operation of operations) {
-    if (operation.type === 'adjustMoney') {
-      if (operation.currency === 'dirty') {
-        changes.dirtyMoney = Math.max(0, (changes.dirtyMoney ?? state.dirtyMoney) + operation.amount)
-      }
-
-      if (operation.currency === 'clean') {
-        changes.cleanMoney = Math.max(0, (changes.cleanMoney ?? state.cleanMoney) + operation.amount)
-      }
-    }
-
-    if (operation.type === 'adjustHeat') {
-      changes.heat = clampHeat((changes.heat ?? state.heat) + operation.amount)
-    }
-
-    if (operation.type === 'adjustSuspicion') {
-      changes.suspicion = clampSuspicion((changes.suspicion ?? state.suspicion) + operation.amount)
-    }
-
-    if (operation.type === 'adjustStress') {
-      changes.stress = clampStress((changes.stress ?? state.stress) + operation.amount)
-    }
-
-    if (operation.type === 'adjustEvidence') {
-      changes.evidence = Math.max(0, (changes.evidence ?? state.evidence) + operation.amount)
-    }
-
-    if (operation.type === 'addLog') {
-      appendLogs.push(operation.entry)
-    }
-
-    if (operation.type === 'addToast') {
-      appendToasts.push(operation.toast)
-    }
-
-    if (operation.type === 'addNote') {
-      nextNotes = appendUnique(nextNotes, operation.note)
-    }
-
-    if (operation.type === 'unlockClue') {
-      nextClues = appendUnique(nextClues, operation.clue)
-    }
-  }
-
-  changes.notes = nextNotes
-  changes.unlockedClues = nextClues
-
-  const lossType = resolveLossType(
-    changes.heat ?? state.heat,
-    changes.suspicion ?? state.suspicion,
-    changes.stress ?? state.stress,
+  const candidate = value as Partial<GameState>
+  return (
+    candidate.saveVersion === SAVE_VERSION &&
+    typeof candidate.day === 'number' &&
+    typeof candidate.timeMinutes === 'number' &&
+    Array.isArray(candidate.targets) &&
+    Array.isArray(candidate.clues) &&
+    typeof candidate.stats === 'object' &&
+    candidate.stats !== null
   )
-
-  if (lossType) {
-    changes.gameOverType = lossType
-  }
-
-  return {
-    changes,
-    appendLogs,
-    appendToasts,
-    sound: lossType ? 'alarm' : undefined,
-  }
 }
 
-export const createRestartState = (state: GameState): GameState => ({
-  ...createInitialGameState(),
-  isMuted: state.isMuted,
-  hasStarted: true,
-  showDisclaimer: false,
-  logs: RESTART_LOGS.map((entry, index) => ({
-    ...entry,
-    id: `restart-log-${index + 1}`,
-    time: '00:00:01',
-  })),
-  toasts: [
-    {
-      id: 'restart-toast',
-      text: 'Ca trực đã được khởi động lại.',
-      type: 'success',
-    },
-  ],
-})
+export const canStartNextDay = (state: GameState) => state.day < MAX_DAY

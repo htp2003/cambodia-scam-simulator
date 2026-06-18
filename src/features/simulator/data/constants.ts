@@ -1,44 +1,33 @@
-import type { LogDescriptor } from '@/features/simulator/types'
+import type { EscapeClue, PlayerStatKey } from '@/features/simulator/types'
 
-export const MAX_HEAT = 100
-export const MAX_SUSPICION = 100
-export const MAX_STRESS = 100
-export const ESCAPE_COST = 4_500
-export const LAUNDER_RATE = 0.72
-export const FIND_PROGRESS_INTERVAL_MS = 80
-export const VICTIM_TYPING_DELAY_MS = 1400
-export const TOAST_DURATION_MS = 4000
-export const PASSIVE_TICK_MS = 1000
-export const RANDOM_EVENT_CHANCE = 0.045
-export const REVEAL_CASE_THRESHOLD = 2
-export const REVEAL_CLEAN_MONEY_THRESHOLD = 450
-export const EVIDENCE_REQUIRED = 3
-export const CLUE_REQUIRED = 3
+export const SAVE_KEY = 'cambodia_scam_simulator_save_v2'
+export const SAVE_VERSION = 2
+export const WORK_START_MINUTES = 9 * 60
+export const WORK_END_MINUTES = 18 * 60
+export const MAX_DAY = 3
+export const MAX_NIGHT_ACTIONS = 2
+export const EVENT_CHANCE = 0.24
+export const TYPING_DELAY_MS = 900
+export const BOOT_DELAY_MS = 1200
 
-export const INITIAL_PLAYER_TITLE = 'Nhân viên chat line'
+export const PLAYER_STAT_LABELS: Record<PlayerStatKey, string> = {
+  health: 'Health',
+  energy: 'Energy',
+  mental: 'Mental',
+  guilt: 'Guilt',
+  empathy: 'Empathy',
+  risk: 'Risk',
+}
 
-export const PLAYER_TITLE_THRESHOLDS = [
-  { title: 'Kẻ đào thoát có hồ sơ', minimumScore: 12_000 },
-  { title: 'Người giữ bằng chứng', minimumScore: 8_500 },
-  { title: 'Mắt xích bắt đầu tỉnh', minimumScore: 4_500 },
-  { title: 'Người ghi chép lặng im', minimumScore: 1_500 },
-] as const
-
-export const INITIAL_LOGS: LogDescriptor[] = [
-  { text: 'Khởi động ca trực đêm tại khu nhà kín Bavet.', color: 'text-slate-500' },
-  {
-    text: 'Màn hình điều phối hội thoại đã đồng bộ. Mục tiêu ban đầu: đẩy doanh số bẩn.',
-    color: 'text-emerald-500',
+export const NIGHT_CLUES: Record<'window' | 'coworker', EscapeClue> = {
+  window: {
+    id: 'camera-blind-spot',
+    label: 'Điểm mù camera gần cầu thang tầng hai',
+    source: 'night',
   },
-  {
-    text: 'Không khí trong phòng nặng như chì. Không ai nói chuyện ngoài tiếng rung của điện thoại.',
-    color: 'text-amber-400',
+  coworker: {
+    id: 'guard-schedule',
+    label: 'Lịch đổi ca của đội bảo vệ nội khu',
+    source: 'night',
   },
-]
-
-export const RESTART_LOGS: LogDescriptor[] = [
-  {
-    text: 'Ca trực được tua lại. Những gì bạn đã thấy vẫn còn ám trên màn hình.',
-    color: 'text-emerald-500 font-bold',
-  },
-]
+}
